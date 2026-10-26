@@ -1,3 +1,6 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Атлас железных дорог</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1000,6 +1003,8 @@ const store = {
       }, (e) => { setStatus('error', 'нет связи'); console.warn(e); });
       sub('routes', S.routes); sub('pois', S.pois);
       setStatus('live', 'общая база');
+    } else if (await this.initGithub() || await this.initServer()) {
+      return;
     } else {
       this.mode = 'local';
       try {
@@ -1014,19 +1019,175 @@ const store = {
       refresh(true);
     }
   },
+  // Хранилище в репозитории GitHub (сайт на GitHub Pages): все читают data.json из репозитория,
+  // а кто ввёл токен с правом записи, сохраняет изменения коммитами в этот же файл
+  gh: null,
+  async initGithub() {
+    const host = location.hostname;
+    if (!host.endsWith('.github.io')) return false;
+    const owner = host.split('.')[0], seg = location.pathname.split('/').filter(Boolean)[0];
+    const repo = seg && !seg.includes('.') ? seg : host;
+    this.gh = { owner, repo, token: '', ops: [], timer: null, saving: null, api: `https://api.github.com/repos/${owner}/${repo}` };
+    try { this.gh.token = localStorage.getItem('railatlas-gh-token') || ''; } catch (e) { /* без запоминания */ }
+    let d;
+    try { d = (await this.ghRead()).data; } catch (e) {
+      // API недоступен (лимит запросов и т. п.): показываем опубликованную копию
+      try { const res = await fetch('data.json', { cache: 'no-cache' }); if (res.ok) d = await res.json(); } catch (e2) { /* файла нет */ }
+    }
+    if (!d) return false;
+    this.mode = 'github'; loadInto(d);
+    S.canWrite = false;
+    if (this.gh.token) S.canWrite = await this.ghCheck();
+    this.statusText();
+    $('#status').style.cursor = 'pointer';
+    $('#status').title = 'Нажмите, чтобы ввести токен GitHub для редактирования';
+    $('#status').addEventListener('click', () => this.login());
+    window.addEventListener('beforeunload', (e) => { if (this.gh.ops.length || this.gh.saving) { e.preventDefault(); e.returnValue = ''; } });
+    refresh(true);
+    return true;
+  },
+  ghHeaders(extra) { return { Accept: 'application/vnd.github+json', ...(this.gh.token ? { Authorization: 'Bearer ' + this.gh.token } : {}), ...extra }; },
+  async ghRead() {
+    const res = await fetch(`${this.gh.api}/contents/data.json?t=${Date.now()}`, { headers: this.ghHeaders(), cache: 'no-store' });
+    if (res.status === 404) return { sha: null, data: { routes: [], pois: [] } };
+    if (!res.ok) throw new Error('GitHub ответил ' + res.status);
+    const meta = await res.json();
+    let text;
+    if (meta.content && meta.encoding === 'base64') text = new TextDecoder().decode(Uint8Array.from(atob(meta.content.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
+    else {
+      // файлы больше 1 МБ API отдаёт без содержимого, берём их отдельным запросом
+      const raw = await fetch(`${this.gh.api}/git/blobs/${meta.sha}`, { headers: this.ghHeaders({ Accept: 'application/vnd.github.raw+json' }), cache: 'no-store' });
+      if (!raw.ok) throw new Error('GitHub ответил ' + raw.status);
+      text = await raw.text();
+    }
+    return { sha: meta.sha, data: JSON.parse(text) };
+  },
+  async ghCheck() {
+    try {
+      const res = await fetch(this.gh.api, { headers: this.ghHeaders(), cache: 'no-store' });
+      if (!res.ok) return false;
+      const r = await res.json();
+      return !!(r.permissions && r.permissions.push);
+    } catch (e) { return false; }
+  },
+  ghQueue(coll, id, data) {
+    this.gh.ops.push({ coll, id, data });
+    this.statusText();
+    clearTimeout(this.gh.timer);
+    this.gh.timer = setTimeout(() => this.ghFlush(), 1500);
+  },
+  async ghFlush() {
+    const gh = this.gh;
+    if (gh.saving) { await gh.saving; if (gh.ops.length) return this.ghFlush(); return; }
+    if (!gh.ops.length) return;
+    const ops = gh.ops; gh.ops = [];
+    gh.saving = (async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        // Берём свежую версию файла и накладываем свои изменения: так не затираются правки с другого компьютера
+        const { sha, data } = await this.ghRead();
+        const maps = { routes: new Map((data.routes || []).map((o) => [o.id, o])), pois: new Map((data.pois || []).map((o) => [o.id, o])) };
+        for (const op of ops) { if (op.data) maps[op.coll].set(op.id, { id: op.id, ...op.data }); else maps[op.coll].delete(op.id); }
+        const out = { format: 'railatlas', version: 1, exportedAt: new Date().toISOString(), routes: [...maps.routes.values()], pois: [...maps.pois.values()] };
+        const bytes = new TextEncoder().encode(JSON.stringify(out));
+        let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        const first = ops[0], what = ops.length > 1 ? `изменений: ${ops.length}` : `${first.data ? 'правка' : 'удаление'}: ${(first.data && first.data.name) || first.id}`;
+        const res = await fetch(`${gh.api}/contents/data.json`, {
+          method: 'PUT', headers: this.ghHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ message: 'Карта: ' + what, content: btoa(bin), ...(sha ? { sha } : {}) }),
+        });
+        if (res.ok) {
+          // показываем то, что теперь лежит в репозитории, вместе с чужими правками
+          S.routes.clear(); S.pois.clear(); loadInto(out);
+          for (const op of gh.ops) { const m = op.coll === 'routes' ? S.routes : S.pois; if (op.data) m.set(op.id, op.data); else m.delete(op.id); }
+          refresh(false, true);
+          return;
+        }
+        if (res.status === 409 || res.status === 422) continue;  // файл успели изменить — читаем заново
+        if (res.status === 401 || res.status === 403) { S.canWrite = false; refresh(); throw new Error('GitHub не принял токен. Нажмите на статус внизу и введите его снова.'); }
+        throw new Error('GitHub ответил ' + res.status);
+      }
+      throw new Error('файл на GitHub всё время меняется, попробуйте ещё раз');
+    })();
+    try { await gh.saving; }
+    catch (e) { gh.ops = ops.concat(gh.ops); toast('Не сохранено на GitHub: ' + e.message); }
+    finally { gh.saving = null; this.statusText(); }
+  },
+  // Серверное хранилище (api.php рядом с сайтом): читают все, правит тот, кто ввёл ключ
+  async initServer() {
+    if (!location.protocol.startsWith('http')) return false;
+    let d;
+    try {
+      const res = await fetch('api.php?action=all', { cache: 'no-store' });
+      if (!res.ok) return false;
+      d = await res.json();
+    } catch (e) { return false; }
+    if (!d || d.format !== 'railatlas-server') return false;
+    this.mode = 'server'; loadInto(d);
+    try { this.key = localStorage.getItem('railatlas-key') || ''; } catch (e) { this.key = ''; }
+    S.canWrite = false;
+    if (this.key) S.canWrite = await this.checkKey();
+    this.statusText();
+    $('#status').style.cursor = 'pointer';
+    $('#status').title = 'Нажмите, чтобы ввести ключ редактирования';
+    $('#status').addEventListener('click', () => this.login());
+    refresh(true);
+    return true;
+  },
+  statusText() {
+    if (this.mode === 'github') {
+      const g = this.gh, busy = g.saving || g.ops.length;
+      return setStatus(busy ? 'local' : S.canWrite ? 'live' : 'local', busy ? (g.saving ? 'сохраняю на GitHub…' : 'есть несохранённые правки') : S.canWrite ? 'GitHub, можно править' : 'GitHub, только просмотр');
+    }
+    setStatus(S.canWrite ? 'live' : 'local', S.canWrite ? 'на сервере, можно править' : 'на сервере, только просмотр');
+  },
+  async checkKey() {
+    try { const r = await fetch('api.php?action=check', { headers: { 'X-Edit-Key': this.key } }); return !!(await r.json()).canWrite; } catch (e) { return false; }
+  },
+  async login() {
+    if (this.mode === 'github') return this.ghLogin();
+    if (S.canWrite) { if (!confirm('Выйти из режима редактирования?')) return; this.key = ''; try { localStorage.removeItem('railatlas-key'); } catch (e) { /* без запоминания */ } S.canWrite = false; this.statusText(); refresh(); return; }
+    const k = prompt('Ключ редактирования:'); if (!k) return;
+    this.key = k.trim();
+    if (await this.checkKey()) { S.canWrite = true; try { localStorage.setItem('railatlas-key', this.key); } catch (e) { /* без запоминания */ } toast('Редактирование включено'); }
+    else toast('Ключ не подошёл');
+    this.statusText(); refresh();
+  },
+  async ghLogin() {
+    const g = this.gh;
+    if (S.canWrite) {
+      if (g.ops.length || g.saving) return toast('Дождитесь, пока изменения сохранятся');
+      if (!confirm('Выйти из режима редактирования на этом компьютере?')) return;
+      g.token = ''; try { localStorage.removeItem('railatlas-gh-token'); } catch (e) { /* без запоминания */ }
+      S.canWrite = false; this.statusText(); refresh(); return;
+    }
+    const k = prompt(`Токен GitHub с правом записи в ${g.owner}/${g.repo} (Contents: Read and write):`); if (!k) return;
+    g.token = k.trim();
+    if (await this.ghCheck()) { S.canWrite = true; try { localStorage.setItem('railatlas-gh-token', g.token); } catch (e) { /* без запоминания */ } toast('Редактирование включено'); }
+    else { g.token = ''; toast('Токен не подошёл или у него нет права записи'); }
+    this.statusText(); refresh();
+  },
+  async serverCall(action, coll, id, body) {
+    const res = await fetch(`api.php?action=${action}&coll=${coll}&id=${encodeURIComponent(id)}`, { method: 'POST', headers: { 'X-Edit-Key': this.key, 'Content-Type': 'application/json' }, body });
+    if (res.status === 403) { S.canWrite = false; this.statusText(); refresh(); const e = new Error('Ключ редактирования не принят. Нажмите на статус внизу и введите его снова.'); throw e; }
+    if (!res.ok) { let m = ''; try { m = (await res.json()).error; } catch (e) { /* без текста */ } throw new Error(m || 'ошибка сервера ' + res.status); }
+  },
   persistLocal() {
     try { localStorage.setItem(LS_KEY, JSON.stringify(exportData())); } catch (e) { toast('Не удалось сохранить в браузере'); }
   },
   async put(coll, id, data) {
     const map = coll === 'routes' ? S.routes : S.pois;
-    if (this.db) { await this.db.collection(coll).doc(id).set(data); map.set(id, data); }
+    if (this.mode === 'server') { await this.serverCall('put', coll, id, JSON.stringify(data)); map.set(id, data); }
+    else if (this.mode === 'github') { if (!S.canWrite) throw new Error('введите токен GitHub'); map.set(id, data); this.ghQueue(coll, id, data); }
+    else if (this.db) { await this.db.collection(coll).doc(id).set(data); map.set(id, data); }
     else { map.set(id, data); this.persistLocal(); }
   },
   async remove(coll, id) {
     const map = coll === 'routes' ? S.routes : S.pois;
-    if (this.db) await this.db.collection(coll).doc(id).delete();
+    if (this.mode === 'server') await this.serverCall('delete', coll, id, '');
+    else if (this.mode === 'github') { if (!S.canWrite) throw new Error('введите токен GitHub'); this.ghQueue(coll, id, null); }
+    else if (this.db) await this.db.collection(coll).doc(id).delete();
     map.delete(id);
-    if (!this.db) this.persistLocal();
+    if (!this.db && this.mode !== 'server' && this.mode !== 'github') this.persistLocal();
   },
 };
 function setStatus(cls, text) { const el = $('#status'); el.className = 'status ' + cls; el.innerHTML = '<i></i>' + esc(text); }
@@ -1328,7 +1489,7 @@ function routeView(id) {
     <div class="group"><h3><span>По ходу маршрута</span><span>${list.length}</span></h3>
     ${list.length ? `<ul class="timeline" style="--rc:${safeColor(r.color)}">${list.map(({ id: pid, p, km, line }) => `<li>${poiItem(pid, p, km, line)}</li>`).join('')}</ul>` : `<p class="hint">На маршруте пока нет объектов. Нажмите «Добавить объект» и кликните рядом с линией: объект сам привяжется к маршруту.</p>`}
     </div>
-    ${S.canWrite ? `<div class="actions"><button class="btn" data-act="findObjects" type="button">Найти станции, туннели и мосты</button><button class="btn" data-act="addPoiHere" type="button">+ Объект вручную</button><button class="btn" data-act="editRoute" type="button">Изменить</button>${delBtn('route')}</div>${list.length ? `<div class="actions" style="margin-top:8px">${S.confirmPoints ? `<span class="row" style="width:100%"><span class="err">Удалить все точки маршрута (${list.length})? Сама линия останется.</span><button class="btn primary sm" data-act="delPoints" type="button">Да, удалить</button><button class="btn sm" data-act="cancelDelPoints" type="button">Нет</button></span>` : `<button class="btn danger" data-act="askDelPoints" type="button">Удалить все точки</button>`}</div>` : ''}` : ''}`;
+    ${S.canWrite ? `<div class="actions"><button class="btn" data-act="findObjects" type="button">Найти станции, туннели и мосты</button>${list.length ? '<button class="btn" data-act="wikiRoute" type="button">Описания и фото для всех объектов</button>' : ''}<button class="btn" data-act="addPoiHere" type="button">+ Объект вручную</button><button class="btn" data-act="editRoute" type="button">Изменить</button>${delBtn('route')}</div>${list.length ? `<div class="actions" style="margin-top:8px">${S.confirmPoints ? `<span class="row" style="width:100%"><span class="err">Удалить все точки маршрута (${list.length})? Сама линия останется.</span><button class="btn primary sm" data-act="delPoints" type="button">Да, удалить</button><button class="btn sm" data-act="cancelDelPoints" type="button">Нет</button></span>` : `<button class="btn danger" data-act="askDelPoints" type="button">Удалить все точки</button>`}</div>` : ''}` : ''}`;
 }
 function poiView(id) {
   const p = S.pois.get(id), r = S.routes.get(p.routeId);
@@ -1346,10 +1507,11 @@ function poiView(id) {
     <h2 class="title">${esc(p.name)}</h2>
     ${r ? `<div class="rule" style="background:${safeColor(r.color)}"></div>` : ''}
     ${facts.length ? `<dl class="facts">${facts.map(([k, v, t]) => `<div><dt>${k}</dt><dd${t ? ' class="txt"' : ''}>${esc(v)}</dd></div>`).join('')}</dl>` : ''}
+    ${safeUrl(p.image) ? `<img class="cover" src="${esc(safeUrl(p.image))}" alt="${esc(p.name)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
     ${p.description ? `<p class="desc">${esc(p.description)}</p>` : '<p class="hint">Описания пока нет.</p>'}
     ${safeUrl(p.link) ? `<p><a href="${esc(safeUrl(p.link))}" target="_blank" rel="noopener">Подробнее ↗</a></p>` : ''}
     <p class="coords">${num(p.lat, 5)}°, ${num(p.lng, 5)}° · <a href="https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lng}#map=16/${p.lat}/${p.lng}" target="_blank" rel="noopener">на OpenStreetMap ↗</a></p>
-    ${S.canWrite ? `<div class="actions"><button class="btn" data-act="editPoi" type="button">Изменить</button>${delBtn('poi')}</div>` : ''}`;
+    ${S.canWrite ? `<div class="actions"><button class="btn" data-act="wikiPoi" type="button">${p.image || p.description ? 'Обновить из Википедии' : 'Найти описание и фото'}</button><button class="btn" data-act="editPoi" type="button">Изменить</button>${delBtn('poi')}</div>` : ''}`;
 }
 function back(to) {
   return to ? `<button class="back" type="button" data-open="${to.name}" data-id="${esc(to.id)}">‹ ${esc(to.label)}</button>`
@@ -1416,6 +1578,7 @@ function poiForm() {
     ${f.type === 'station' || f.type === 'halt' ? `<label>Платформы<input class="inp" id="pf-platforms" name="platforms" maxlength="40" value="${esc(f.platforms)}" placeholder="2 островные, 4 пути"></label>` : ''}
     <label>Описание<textarea id="pf-description" name="description" maxlength="4000">${esc(f.description)}</textarea></label>
     <label>Ссылка<input class="inp" id="pf-link" name="link" type="url" maxlength="400" value="${esc(f.link)}" placeholder="https://…"></label>
+    <label>Картинка (адрес изображения)<input class="inp" id="pf-image" name="image" type="url" maxlength="1000" value="${esc(f.image)}" placeholder="https://…"></label>
     <div class="err" id="pf-err"></div>
     <div class="actions"><button class="btn primary" type="submit">Сохранить объект</button></div>
   </form>`;
@@ -1463,6 +1626,8 @@ $('#panel').addEventListener('click', async (e) => {
   else if (act === 'delBranch') { syncRouteForm(); S.draft.branches.splice(+a.dataset.i, 1); renderPanel(); drawDraft(); }
   else if (act === 'addBranch') { syncRouteForm(); startBranch(); }
   else if (act === 'findObjects') findObjects(S.view.id);
+  else if (act === 'wikiPoi') wikiFill([S.view.id], true);
+  else if (act === 'wikiRoute') wikiFill(poisOfRoute(S.view.id).map((x) => x.id), false);
   else if (act === 'finderAll' || act === 'finderNone') { S.view.items.forEach((o) => { o.checked = act === 'finderAll'; }); renderPanel(); }
   else if (act === 'finderAdd') addFound();
 });
@@ -1518,7 +1683,7 @@ async function savePoi(form) {
     lat: +d.lat.toFixed(6), lng: +d.lng.toFixed(6),
     lengthM: numOrNull(f.lengthM), heightM: numOrNull(f.heightM), elevationM: numOrNull(f.elevationM),
     year: (f.year || '').slice(0, 20), platforms: (f.platforms || '').slice(0, 40),
-    description: f.description.slice(0, 4000), link: safeUrl(f.link), updatedAt: new Date().toISOString(),
+    description: f.description.slice(0, 4000), link: safeUrl(f.link), image: safeUrl(f.image), updatedAt: new Date().toISOString(),
   };
   if (!prev.createdAt) data.createdAt = data.updatedAt;
   delete data.example;
@@ -2016,13 +2181,80 @@ function nearestRoute(ll) {
 function placePoiAt(ll) {
   S.mode = null; document.body.classList.remove('drawing'); $('#banner').hidden = true;
   const routeId = S.placeRoute || nearestRoute(ll);
-  S.poiDraft = { id: null, lat: ll[0], lng: ll[1], form: { type: 'station', name: '', routeId, lengthM: '', heightM: '', year: '', elevationM: '', platforms: '', description: '', link: '' } };
+  S.poiDraft = { id: null, lat: ll[0], lng: ll[1], form: { type: 'station', name: '', routeId, lengthM: '', heightM: '', year: '', elevationM: '', platforms: '', description: '', link: '', image: '' } };
   S.view = { name: 'poiForm' }; refresh(); drawPoiDraft();
   setTimeout(() => { const n = $('#pf-name'); if (n) n.focus(); }, 30);
 }
+// ---------- Описание и фото из Википедии (открытые данные, лицензия CC BY-SA) ----------
+const WIKI_LANGS = ['ru', 'en', 'de', 'pl', 'it', 'fr', 'cs'];
+const WIKI_NOISE = /\b(station|railway|railroad|bahnhof|hbf|bf|gare|stazione|stacja|dworzec|nadrazi|vokzal|tunnel|tunel|bridge|brucke|ponte|most|viaduct|viadukt|depot|halt|вокзал|станция|станции|платформа|тоннель|туннель|мост|виадук|депо|zeleznicni|zastavka)\b/g;
+const wikiNorm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(WIKI_NOISE, ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+function wikiScore(a, b) {
+  const x = wikiNorm(a).split(' ').filter(Boolean), y = new Set(wikiNorm(b).split(' ').filter(Boolean));
+  if (!x.length || !y.size) return 0;
+  return x.filter((w) => y.has(w)).length / Math.max(x.length, y.size);
+}
+async function wikiQuery(lang, extra) {
+  const q = new URLSearchParams({ action: 'query', format: 'json', origin: '*', prop: 'extracts|pageimages|coordinates|info', exintro: '1', explaintext: '1', exlimit: 'max', piprop: 'thumbnail', pithumbsize: '640', inprop: 'url', colimit: 'max', ...extra });
+  const r = await fetch(`https://${lang}.wikipedia.org/w/api.php?${q}`);
+  if (!r.ok) throw new Error('wiki ' + r.status);
+  const j = await r.json();
+  return Object.values((j.query && j.query.pages) || {});
+}
+async function wikiLookup(p) {
+  for (const lang of WIKI_LANGS) {
+    let pages = [];
+    try {
+      const [geo, srch] = await Promise.all([
+        wikiQuery(lang, { generator: 'geosearch', ggscoord: `${p.lat}|${p.lng}`, ggsradius: '1500', ggslimit: '15' }).catch(() => []),
+        wikiQuery(lang, { generator: 'search', gsrsearch: p.name, gsrlimit: '5' }).catch(() => []),
+      ]);
+      pages = [...geo, ...srch];
+    } catch (e) { continue; }
+    let best = null;
+    for (const pg of pages) {
+      if (!pg.extract) continue;
+      const c = pg.coordinates && pg.coordinates[0];
+      const dist = c ? hav([p.lat, p.lng], [c.lat, c.lon]) : null;
+      if (dist != null && dist > 8000) continue;
+      const sc = wikiScore(p.name, pg.title);
+      if (sc < 0.5 && !(dist != null && dist < 100 && sc > 0)) continue;
+      const rank = sc * 10 - (dist != null ? Math.min(dist, 8000) / 8000 : 1) + (pg.thumbnail ? 0.2 : 0);
+      if (!best || rank > best.rank) best = { rank, pg, lang };
+    }
+    if (best) {
+      const pg = best.pg;
+      let text = pg.extract.replace(/\s*\n+\s*/g, '\n').trim();
+      if (text.length > 900) { const cut = text.slice(0, 900), i = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('.\n')); text = i > 300 ? cut.slice(0, i + 1) : cut + '…'; }
+      return { title: pg.title, text, image: pg.thumbnail ? pg.thumbnail.source : '', url: pg.fullurl || `https://${best.lang}.wikipedia.org/?curid=${pg.pageid}`, lang: best.lang };
+    }
+  }
+  return null;
+}
+async function wikiFill(ids, single) {
+  if (!ids.length) return;
+  let done = 0, miss = 0;
+  for (const id of ids) {
+    const p = S.pois.get(id); if (!p) continue;
+    if (!single && p.image && p.description) continue;
+    if (!single) toast(`Ищу в Википедии: ${done + miss + 1} из ${ids.length}…`);
+    else toast('Ищу в Википедии…');
+    let w = null;
+    try { w = await wikiLookup(p); } catch (e) { w = null; }
+    if (!w) { miss++; continue; }
+    const data = { ...p, updatedAt: new Date().toISOString() };
+    if (!p.description || p.descSource === 'wikipedia') { data.description = `${w.text}\n\nИсточник: статья «${w.title}» в Википедии (${w.lang}), CC BY-SA.`; data.descSource = 'wikipedia'; }
+    if (!p.image && w.image) data.image = w.image;
+    if (!p.link) data.link = w.url;
+    delete data.example;
+    try { await store.put('pois', id, data); done++; } catch (err) { toast(writeError(err)); return; }
+  }
+  refresh();
+  toast(done ? `Дополнено объектов: ${done}${miss ? `, не нашлось: ${miss}` : ''}` : 'В Википедии ничего подходящего не нашлось. Можно добавить описание вручную.');
+}
 function startPoiEdit(id) {
   const p = S.pois.get(id); if (!p) return;
-  const f = { type: p.type, name: p.name, routeId: p.routeId || '', lengthM: p.lengthM ?? '', heightM: p.heightM ?? '', year: p.year || '', elevationM: p.elevationM ?? '', platforms: p.platforms || '', description: p.description || '', link: p.link || '' };
+  const f = { type: p.type, name: p.name, routeId: p.routeId || '', lengthM: p.lengthM ?? '', heightM: p.heightM ?? '', year: p.year || '', elevationM: p.elevationM ?? '', platforms: p.platforms || '', description: p.description || '', link: p.link || '', image: p.image || '' };
   S.poiDraft = { id, lat: p.lat, lng: p.lng, form: f };
   S.view = { name: 'poiForm' }; refresh(); drawPoiDraft();
 }
