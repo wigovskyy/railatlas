@@ -1022,6 +1022,8 @@ const store = {
   // Хранилище в репозитории GitHub (сайт на GitHub Pages): все читают data.json из репозитория,
   // а кто ввёл токен с правом записи, сохраняет изменения коммитами в этот же файл
   gh: null,
+  // Адрес воркера входа через GitHub (см. auth/README.md). Пустой — вместо входа вставляется токен вручную
+  ghAuthUrl: '',
   async initGithub() {
     const host = location.hostname;
     if (!host.endsWith('.github.io')) return false;
@@ -1029,6 +1031,13 @@ const store = {
     const repo = seg && !seg.includes('.') ? seg : host;
     this.gh = { owner, repo, token: '', ops: [], timer: null, saving: null, api: `https://api.github.com/repos/${owner}/${repo}` };
     try { this.gh.token = localStorage.getItem('railatlas-gh-token') || ''; } catch (e) { /* без запоминания */ }
+    // Возврат со страницы входа: токен приходит в адресе после #, убираем его оттуда сразу
+    const m = location.hash.match(/[#&]gh_token=([^&]+)/);
+    if (m) {
+      this.gh.token = decodeURIComponent(m[1]);
+      try { localStorage.setItem('railatlas-gh-token', this.gh.token); } catch (e) { /* без запоминания */ }
+      history.replaceState(null, '', location.pathname + location.search);
+    }
     let d;
     try { d = (await this.ghRead()).data; } catch (e) {
       // API недоступен (лимит запросов и т. п.): показываем опубликованную копию
@@ -1037,10 +1046,14 @@ const store = {
     if (!d) return false;
     this.mode = 'github'; loadInto(d);
     S.canWrite = false;
-    if (this.gh.token) S.canWrite = await this.ghCheck();
+    if (this.gh.token) {
+      S.canWrite = await this.ghCheck();
+      if (S.canWrite && m) toast('Вы вошли, редактирование включено');
+      else if (!S.canWrite) { toast(m ? 'У этого аккаунта GitHub нет права записи в репозиторий' : 'Вход устарел, войдите через GitHub снова'); this.gh.token = ''; try { localStorage.removeItem('railatlas-gh-token'); } catch (e) { /* без запоминания */ } }
+    }
     this.statusText();
     $('#status').style.cursor = 'pointer';
-    $('#status').title = 'Нажмите, чтобы ввести токен GitHub для редактирования';
+    $('#status').title = this.ghAuthUrl ? 'Нажмите, чтобы войти через GitHub и редактировать' : 'Нажмите, чтобы ввести токен GitHub для редактирования';
     $('#status').addEventListener('click', () => this.login());
     window.addEventListener('beforeunload', (e) => { if (this.gh.ops.length || this.gh.saving) { e.preventDefault(); e.returnValue = ''; } });
     refresh(true);
@@ -1103,7 +1116,7 @@ const store = {
           return;
         }
         if (res.status === 409 || res.status === 422) continue;  // файл успели изменить — читаем заново
-        if (res.status === 401 || res.status === 403) { S.canWrite = false; refresh(); throw new Error('GitHub не принял токен. Нажмите на статус внизу и введите его снова.'); }
+        if (res.status === 401 || res.status === 403) { S.canWrite = false; refresh(); throw new Error(this.ghAuthUrl ? 'GitHub не принял вход. Нажмите на статус внизу и войдите снова.' : 'GitHub не принял токен. Нажмите на статус внизу и введите его снова.'); }
         throw new Error('GitHub ответил ' + res.status);
       }
       throw new Error('файл на GitHub всё время меняется, попробуйте ещё раз');
@@ -1136,7 +1149,7 @@ const store = {
   statusText() {
     if (this.mode === 'github') {
       const g = this.gh, busy = g.saving || g.ops.length;
-      return setStatus(busy ? 'local' : S.canWrite ? 'live' : 'local', busy ? (g.saving ? 'сохраняю на GitHub…' : 'есть несохранённые правки') : S.canWrite ? 'GitHub, можно править' : 'GitHub, только просмотр');
+      return setStatus(busy ? 'local' : S.canWrite ? 'live' : 'local', busy ? (g.saving ? 'сохраняю на GitHub…' : 'есть несохранённые правки') : S.canWrite ? 'GitHub, можно править' : this.ghAuthUrl ? 'только просмотр · войти через GitHub' : 'GitHub, только просмотр');
     }
     setStatus(S.canWrite ? 'live' : 'local', S.canWrite ? 'на сервере, можно править' : 'на сервере, только просмотр');
   },
@@ -1160,6 +1173,7 @@ const store = {
       g.token = ''; try { localStorage.removeItem('railatlas-gh-token'); } catch (e) { /* без запоминания */ }
       S.canWrite = false; this.statusText(); refresh(); return;
     }
+    if (this.ghAuthUrl) { location.href = `${this.ghAuthUrl.replace(/\/$/, '')}/login?return=${encodeURIComponent(location.origin + location.pathname)}`; return; }
     const k = prompt(`Токен GitHub с правом записи в ${g.owner}/${g.repo} (Contents: Read and write):`); if (!k) return;
     g.token = k.trim();
     if (await this.ghCheck()) { S.canWrite = true; try { localStorage.setItem('railatlas-gh-token', g.token); } catch (e) { /* без запоминания */ } toast('Редактирование включено'); }
