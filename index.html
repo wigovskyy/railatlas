@@ -778,6 +778,26 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .mapwrap { position: relative; min-width: 0; }
 #map { position: absolute; inset: 0; background: var(--sea); }
+.pz { opacity: 0; visibility: hidden; transition: opacity .25s ease, visibility 0s linear .25s; }
+.pz.pz-sel, .z-all .pz { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-3 .pz3 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-4 .pz4 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-5 .pz5 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-6 .pz6 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-7 .pz7 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-8 .pz8 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-9 .pz9 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-10 .pz10 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-11 .pz11 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-12 .pz12 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-13 .pz13 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-14 .pz14 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-15 .pz15 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-16 .pz16 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-17 .pz17 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-18 .pz18 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-19 .pz19 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
+.z-ge-20 .pz20 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
 .orm-gray { filter: var(--orm-filter); }
 .basesw { display: flex; align-items: center; gap: 2px; padding: 4px; background: #fff; border-radius: 12px; box-shadow: 0 2px 10px rgba(20,30,45,.18); margin-top: calc(12px + env(safe-area-inset-top, 0px)) !important; }
 .basesw button { border: 0; background: none; padding: 6px 12px; border-radius: 8px; font: 500 14px var(--f-body); color: #3b4252; cursor: pointer; }
@@ -956,7 +976,7 @@ const S = {
   mode: null,                   // null | draw | placePoi
   draft: null,                  // { path: [], form: {...}, id }
   poiDraft: null,               // { lat, lng, form, id }
-  confirmDelete: false,
+  confirmDelete: false, confirmPoints: false,
   canWrite: true,
   railAvailable: null,           // null — ещё не проверяли, false — внешние данные недоступны
 };
@@ -1107,6 +1127,7 @@ Object.values(TILES).forEach((g) => tileLayersOf(g).forEach((l) => { l.on('tilel
 ORM.on('tileerror', onTileFail);
 TILES[currentBase].addTo(map); tileLayersOf(TILES[currentBase]).forEach((l) => l.bringToBack()); ORM.addTo(map);
 
+map.on('zoomend', updateZoomClass); updateZoomClass();
 const routeLayer = L.layerGroup().addTo(map);
 const poiLayer = L.layerGroup().addTo(map);
 const draftLayer = L.layerGroup().addTo(map);
@@ -1150,6 +1171,14 @@ function drawRoutes() {
     routeLayers.set(id, line);
   }
 }
+const POI_MIN_ZOOM = { landmark: 9, station: 10, depot: 10, tunnel: 11, bridge: 11, viaduct: 11, halt: 12 };
+// Классы на контейнере карты: z-ge-N, пока масштаб не меньше N; z-all при рисовании, чтобы видеть все точки для привязки
+function updateZoomClass() {
+  const el = map.getContainer(), z = Math.round(map.getZoom());
+  [...el.classList].filter((c) => c.startsWith('z-ge-')).forEach((c) => el.classList.remove(c));
+  for (let n = 3; n <= Math.min(z, 20); n++) el.classList.add('z-ge-' + n);
+  el.classList.toggle('z-all', !!S.mode);
+}
 function drawPois() {
   poiLayer.clearLayers(); poiMarkers.clear();
   const sel = selectedRouteId();
@@ -1160,12 +1189,16 @@ function drawPois() {
     const size = p.type === 'station' ? 15 : 22;
     let cls = '';
     if (selPoi === id) cls = ' sel'; else if (sel && p.routeId !== sel) cls = ' dim';
+    // С какого масштаба показывать точку; у открытого маршрута порог ниже на 2
+    const minZ = Math.max(3, (POI_MIN_ZOOM[p.type] ?? 10) - (sel && p.routeId === sel ? 2 : 0));
+    const pz = 'pz pz' + minZ + (selPoi === id ? ' pz-sel' : '');
     const html = iconHtml(p.type, size).replace('class="pm', 'class="pm' + cls);
-    const m = L.marker([p.lat, p.lng], { icon: L.divIcon({ html, className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2] }), riseOnHover: true, keyboard: true, title: p.name, zIndexOffset: p.type === 'station' ? 0 : 200 });
+    const m = L.marker([p.lat, p.lng], { icon: L.divIcon({ html, className: pz, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }), riseOnHover: true, keyboard: true, title: p.name, zIndexOffset: p.type === 'station' ? 0 : 200 });
     m.bindTooltip(`${esc(p.name)}<small>${esc(TYPES[p.type]?.label || '')}</small>`, { className: 'rt', direction: 'top', offset: [0, -size / 2 - 2] });
     m.on('click', (e) => { if (S.mode === 'draw') { addVertex([p.lat, p.lng]); return; } if (S.mode) return; openView({ name: 'poi', id }); });
     poiLayer.addLayer(m); poiMarkers.set(id, m);
   }
+  updateZoomClass();
 }
 
 function fitAll() {
@@ -1204,7 +1237,7 @@ $('#q').addEventListener('input', (e) => { S.q = e.target.value.trim().toLowerCa
 // ---------- Панель ----------
 function openView(v) {
   if (S.mode) return;
-  S.view = v; S.confirmDelete = false; refresh();
+  S.view = v; S.confirmDelete = false; S.confirmPoints = false; refresh();
   if (v.name === 'route') { const r = S.routes.get(v.id); if (r) map.fitBounds(L.latLngBounds(allLines(r).flat()).pad(0.15), { maxZoom: 13 }); }
   if (v.name === 'poi') { const p = S.pois.get(v.id); if (p) map.setView([p.lat, p.lng], Math.max(map.getZoom(), 12)); }
   $('#side').classList.remove('collapsed');
@@ -1295,7 +1328,7 @@ function routeView(id) {
     <div class="group"><h3><span>По ходу маршрута</span><span>${list.length}</span></h3>
     ${list.length ? `<ul class="timeline" style="--rc:${safeColor(r.color)}">${list.map(({ id: pid, p, km, line }) => `<li>${poiItem(pid, p, km, line)}</li>`).join('')}</ul>` : `<p class="hint">На маршруте пока нет объектов. Нажмите «Добавить объект» и кликните рядом с линией: объект сам привяжется к маршруту.</p>`}
     </div>
-    ${S.canWrite ? `<div class="actions"><button class="btn" data-act="findObjects" type="button">Найти станции, туннели и мосты</button><button class="btn" data-act="addPoiHere" type="button">+ Объект вручную</button><button class="btn" data-act="editRoute" type="button">Изменить</button>${delBtn('route')}</div>` : ''}`;
+    ${S.canWrite ? `<div class="actions"><button class="btn" data-act="findObjects" type="button">Найти станции, туннели и мосты</button><button class="btn" data-act="addPoiHere" type="button">+ Объект вручную</button><button class="btn" data-act="editRoute" type="button">Изменить</button>${delBtn('route')}</div>${list.length ? `<div class="actions" style="margin-top:8px">${S.confirmPoints ? `<span class="row" style="width:100%"><span class="err">Удалить все точки маршрута (${list.length})? Сама линия останется.</span><button class="btn primary sm" data-act="delPoints" type="button">Да, удалить</button><button class="btn sm" data-act="cancelDelPoints" type="button">Нет</button></span>` : `<button class="btn danger" data-act="askDelPoints" type="button">Удалить все точки</button>`}</div>` : ''}` : ''}`;
 }
 function poiView(id) {
   const p = S.pois.get(id), r = S.routes.get(p.routeId);
@@ -1401,6 +1434,16 @@ $('#panel').addEventListener('click', async (e) => {
   const act = a.dataset.act;
   if (act === 'askDelete') { S.confirmDelete = true; renderPanel(); }
   else if (act === 'cancelDelete') { S.confirmDelete = false; renderPanel(); }
+  else if (act === 'askDelPoints') { S.confirmPoints = true; renderPanel(); }
+  else if (act === 'cancelDelPoints') { S.confirmPoints = false; renderPanel(); }
+  else if (act === 'delPoints') {
+    const rid = S.view.id, ids = [...S.pois].filter(([, p]) => p.routeId === rid).map(([pid]) => pid);
+    a.disabled = true; a.textContent = 'Удаляю…';
+    let n = 0;
+    try { for (const pid of ids) { await store.remove('pois', pid); n++; } toast(`Удалено точек: ${n}`); }
+    catch (err) { toast(writeError(err)); }
+    S.confirmPoints = false; refresh();
+  }
   else if (act === 'delete') {
     const kind = a.dataset.kind, id = S.view.id;
     try { await store.remove(kind === 'route' ? 'routes' : 'pois', id); toast(kind === 'route' ? 'Маршрут удалён' : 'Объект удалён'); S.view = { name: 'list' }; refresh(); }
