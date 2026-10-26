@@ -1023,7 +1023,7 @@ const store = {
   // а кто ввёл токен с правом записи, сохраняет изменения коммитами в этот же файл
   gh: null,
   // Адрес воркера входа через GitHub (см. auth/README.md). Пустой — вместо входа вставляется токен вручную
-  ghAuthUrl: '',
+  ghAuthUrl: 'https://railatlas-auth.wigovsky.workers.dev',
   async initGithub() {
     const host = location.hostname;
     if (!host.endsWith('.github.io')) return false;
