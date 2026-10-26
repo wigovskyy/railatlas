@@ -2,7 +2,7 @@
 
 Интерактивная карта железнодорожных маршрутов: свои линии, станции, туннели, мосты и интересные места.
 
-- Подложки Plain (CARTO), Terrain (OpenTopoMap), Satellite (Esri) и слой Rail — вся железнодорожная сеть мира от OpenRailwayMap, серый и полупрозрачный.
+- Подложки Plain (Esri Light Gray), Terrain (Esri World Topo), Satellite (Esri Imagery), все без API-ключа, и слой Rail — вся железнодорожная сеть мира от OpenRailwayMap, серый и полупрозрачный.
 - «Добавить маршрут»: точки ставятся на карте, линия прокладывается по рельсам из OpenStreetMap (через Overpass API) со всеми поворотами.
 - После сохранения маршрута сайт находит вдоль него станции, туннели и мосты из OpenStreetMap.
 - Импорт треков из Google Мои карты и Google Earth (KML/KMZ): линии становятся маршрутами, точки — объектами.
@@ -10,4 +10,4 @@
 
 Весь сайт — один файл `index.html`, сборка не нужна.
 
-Данные карт: © участники OpenStreetMap, OpenRailwayMap, CARTO, Esri, Natural Earth.
+Данные карт: © участники OpenStreetMap, OpenRailwayMap, Esri, Natural Earth.

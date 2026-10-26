@@ -1045,11 +1045,21 @@ const base = L.geoJSON(countries, { renderer: baseRenderer, interactive: false, 
 function baseStyle() { return { color: css('--cborder'), weight: 0.8, fillColor: css('--land'), fillOpacity: 1 }; }
 
 const OSM_ATTR = '© участники <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
+const esri = (path, opts) => L.tileLayer(`${ESRI}/${path}/MapServer/tile/{z}/{y}/{x}`, { maxZoom: 19, ...opts });
+// Бесплатные растровые карты Esri без ключа (CARTO и подобные теперь требуют API-ключ)
 const TILES = {
-  plain: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 20, attribution: OSM_ATTR + ' © <a href="https://carto.com/attributions">CARTO</a>' }),
-  terrain: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { subdomains: 'abc', maxZoom: 17, attribution: OSM_ATTR + ', SRTM | © <a href="https://opentopomap.org">OpenTopoMap</a>' }),
-  satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' }),
+  plain: L.layerGroup([
+    esri('Canvas/World_Light_Gray_Base', { maxNativeZoom: 16, attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS user community' }),
+    esri('Canvas/World_Light_Gray_Reference', { maxNativeZoom: 16 }),
+  ]),
+  terrain: esri('World_Topo_Map', { maxNativeZoom: 19, attribution: 'Esri, HERE, Garmin, Intermap, USGS, NGA, NASA, © OpenStreetMap contributors, and the GIS user community' }),
+  satellite: L.layerGroup([
+    esri('World_Imagery', { maxNativeZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics, and the GIS user community' }),
+    esri('Reference/World_Boundaries_and_Places', { maxNativeZoom: 19 }),
+  ]),
 };
+const tileLayersOf = (l) => (l.getLayers ? l.getLayers() : [l]);
 // Вся сеть железных дорог: серая, 15% непрозрачности. Тайлы берутся на уровень крупнее
 // и показываются вдвое меньше, поэтому линии выходят вдвое тоньше.
 const ORM = L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', {
@@ -1060,7 +1070,7 @@ const ORM = L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{
 let currentBase = 'plain', tilesOk = false, tilesFailed = 0;
 function setBase(name) {
   if (!TILES[name]) return;
-  map.removeLayer(TILES[currentBase]); currentBase = name; TILES[name].addTo(map).bringToBack();
+  map.removeLayer(TILES[currentBase]); currentBase = name; TILES[name].addTo(map); tileLayersOf(TILES[name]).forEach((l) => l.bringToBack());
   try { localStorage.setItem('railatlas-base', name); } catch (e) { /* без запоминания */ }
   document.querySelectorAll('.basesw [data-base]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.base === name)));
 }
@@ -1093,9 +1103,9 @@ function onTileFail() {
   if (S.mode === 'draw') renderBanner();
 }
 try { const saved = localStorage.getItem('railatlas-base'); if (TILES[saved]) currentBase = saved; } catch (e) { /* по умолчанию Plain */ }
-Object.values(TILES).forEach((l) => { l.on('tileload', onTileOk); l.on('tileerror', onTileFail); });
+Object.values(TILES).forEach((g) => tileLayersOf(g).forEach((l) => { l.on('tileload', onTileOk); l.on('tileerror', onTileFail); }));
 ORM.on('tileerror', onTileFail);
-TILES[currentBase].addTo(map); ORM.addTo(map);
+TILES[currentBase].addTo(map); tileLayersOf(TILES[currentBase]).forEach((l) => l.bringToBack()); ORM.addTo(map);
 
 const routeLayer = L.layerGroup().addTo(map);
 const poiLayer = L.layerGroup().addTo(map);
