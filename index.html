@@ -779,13 +779,18 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .mapwrap { position: relative; min-width: 0; }
 #map { position: absolute; inset: 0; background: var(--sea); }
 .orm-gray { filter: var(--orm-filter); }
+.basesw { display: flex; align-items: center; gap: 2px; padding: 4px; background: #fff; border-radius: 12px; box-shadow: 0 2px 10px rgba(20,30,45,.18); margin-top: calc(12px + env(safe-area-inset-top, 0px)) !important; }
+.basesw button { border: 0; background: none; padding: 6px 12px; border-radius: 8px; font: 500 14px var(--f-body); color: #3b4252; cursor: pointer; }
+.basesw button:hover { background: #f1f2f8; }
+.basesw button[aria-pressed="true"] { background: #ececfb; color: #1c1f3a; font-weight: 700; }
+.basesw .sep { width: 1px; align-self: stretch; margin: 4px 2px; background: #e3e5ec; }
 .leaflet-container { font-family: var(--f-body); background: var(--sea); }
 .maptools { position: absolute; z-index: 800; top: calc(12px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .maptools .btn { box-shadow: var(--shadow); }
 .banner { position: absolute; z-index: 900; left: 50%; transform: translateX(-50%); bottom: calc(22px + env(safe-area-inset-bottom, 0px)); width: min(560px, calc(100% - 24px)); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 12px 14px; display: grid; gap: 10px; }
 .banner strong { font: 700 17px var(--f-display); letter-spacing: .02em; }
 .banner .meta { font: 12.5px var(--f-mono); color: var(--muted); }
-.toast { position: absolute; z-index: 950; left: max(64px, env(safe-area-inset-left, 0px)); top: calc(14px + env(safe-area-inset-top, 0px)); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-weight: 600; font-size: 14px; box-shadow: var(--shadow); }
+.toast { position: absolute; z-index: 950; left: max(12px, env(safe-area-inset-left, 0px)); top: calc(66px + env(safe-area-inset-top, 0px)); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-weight: 600; font-size: 14px; box-shadow: var(--shadow); }
 .drawing #map { cursor: crosshair; }
 .drawing .leaflet-interactive { cursor: crosshair; }
 
@@ -820,6 +825,8 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .maptools .lbl { display: none; }
   .title { font-size: 25px; }
   .sheet-toggle { display: inline-flex !important; }
+  .maptools { top: calc(60px + env(safe-area-inset-top, 0px)); }
+  .basesw button { padding: 6px 9px; font-size: 13px; }
 }
 .sheet-toggle { display: none; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -840,7 +847,7 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
       <div class="chips" id="chips"></div>
       <div class="row">
         <select id="country" aria-label="Страна"></select>
-        <select id="game" aria-label="Симулятор"></select>
+        <select id="game" aria-label="Игра"></select>
       </div>
       <div class="row">
         <button class="btn sm" id="exportBtn" type="button" title="Сохранить все данные в файл JSON">Экспорт</button>
@@ -1030,7 +1037,7 @@ L.control.zoom({ position: 'bottomright' }).addTo(map);
 L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 map.attributionControl.setPrefix('<a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a>');
 
-// Векторная подложка работает везде; поверх неё — настоящие карты и слой OpenRailwayMap, если сеть их пропускает.
+// Векторная подложка работает везде; поверх неё — карты на данных OpenStreetMap и слой OpenRailwayMap, если сеть их пропускает.
 const world = JSON.parse(document.getElementById('world').textContent);
 const countries = topojson.feature(world, world.objects.countries);
 const baseRenderer = L.canvas({ padding: 0.3 });
@@ -1039,35 +1046,56 @@ function baseStyle() { return { color: css('--cborder'), weight: 0.8, fillColor:
 
 const OSM_ATTR = '© участники <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
 const TILES = {
-  light: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 20, attribution: OSM_ATTR + ' © CARTO' }),
-  dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 20, attribution: OSM_ATTR + ' © CARTO' }),
-  osm: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM_ATTR }),
-  sat: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' }),
+  plain: L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 20, attribution: OSM_ATTR + ' © <a href="https://carto.com/attributions">CARTO</a>' }),
+  terrain: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { subdomains: 'abc', maxZoom: 17, attribution: OSM_ATTR + ', SRTM | © <a href="https://opentopomap.org">OpenTopoMap</a>' }),
+  satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' }),
 };
-const ormLayer = (style, extra) => L.tileLayer(`https://{s}.tiles.openrailwaymap.org/${style}/{z}/{x}/{y}.png`, { subdomains: 'abc', maxZoom: 19, attribution: '<a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>', ...extra });
-// Общая сеть — серая и полупрозрачная, чтобы не спорить с маршрутами; тематические слои остаются цветными
-const ORM = { standard: ormLayer('standard', { className: 'orm-gray', opacity: 0.55 }), maxspeed: ormLayer('maxspeed'), electrification: ormLayer('electrification'), gauge: ormLayer('gauge') };
+// Вся сеть железных дорог: серая, 15% непрозрачности. Тайлы берутся на уровень крупнее
+// и показываются вдвое меньше, поэтому линии выходят вдвое тоньше.
+const ORM = L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', {
+  subdomains: 'abc', tileSize: 128, zoomOffset: 1, maxZoom: 18, opacity: 0.15, className: 'orm-gray',
+  attribution: '<a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
+});
 
-const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light' || document.documentElement.dataset.theme === 'dark';
-const startBase = prefersDark ? TILES.dark : TILES.light;
-let tilesOk = false, tilesFailed = 0;
+let currentBase = 'plain', tilesOk = false, tilesFailed = 0;
+function setBase(name) {
+  if (!TILES[name]) return;
+  map.removeLayer(TILES[currentBase]); currentBase = name; TILES[name].addTo(map).bringToBack();
+  try { localStorage.setItem('railatlas-base', name); } catch (e) { /* без запоминания */ }
+  document.querySelectorAll('.basesw [data-base]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.base === name)));
+}
+const BaseSwitch = L.Control.extend({
+  options: { position: 'topleft' },
+  onAdd() {
+    const el = L.DomUtil.create('div', 'basesw');
+    el.innerHTML = [['plain', 'Plain'], ['terrain', 'Terrain'], ['satellite', 'Satellite']]
+      .map(([k, t]) => `<button type="button" data-base="${k}" aria-pressed="${k === currentBase}">${t}</button>`).join('')
+      + `<span class="sep"></span><button type="button" data-rail aria-pressed="true" title="Показать или скрыть все железные дороги мира">Rail</button>`;
+    L.DomEvent.disableClickPropagation(el);
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.base) setBase(b.dataset.base);
+      if (b.hasAttribute('data-rail')) { const on = !map.hasLayer(ORM); on ? ORM.addTo(map) : map.removeLayer(ORM); b.setAttribute('aria-pressed', String(on)); }
+    });
+    return el;
+  },
+});
 function onTileOk() {
   if (tilesOk) return; tilesOk = true; S.railAvailable = S.railAvailable !== false;
   map.removeLayer(base);
-  L.control.layers({
-    'Светлая карта': TILES.light, 'Тёмная карта': TILES.dark, 'OpenStreetMap': TILES.osm, 'Спутник': TILES.sat, 'Схема (без интернета)': base,
-  }, {
-    'Все железные дороги мира': ORM.standard, 'Максимальная скорость': ORM.maxspeed, 'Электрификация': ORM.electrification, 'Ширина колеи': ORM.gauge,
-  }, { position: 'topleft' }).addTo(map);
+  new BaseSwitch().addTo(map);
 }
 function onTileFail() {
   if (tilesOk || ++tilesFailed < 3) return;
-  map.removeLayer(startBase); map.removeLayer(ORM.standard);
+  map.removeLayer(TILES[currentBase]); map.removeLayer(ORM);
   S.railAvailable = false; // та же сеть не пустит и к данным OpenStreetMap
   setStatusNote();
   if (S.mode === 'draw') renderBanner();
 }
-[startBase, ORM.standard].forEach((l) => { l.on('tileload', onTileOk); l.on('tileerror', onTileFail); l.addTo(map); });
+try { const saved = localStorage.getItem('railatlas-base'); if (TILES[saved]) currentBase = saved; } catch (e) { /* по умолчанию Plain */ }
+Object.values(TILES).forEach((l) => { l.on('tileload', onTileOk); l.on('tileerror', onTileFail); });
+ORM.on('tileerror', onTileFail);
+TILES[currentBase].addTo(map); ORM.addTo(map);
 
 const routeLayer = L.layerGroup().addTo(map);
 const poiLayer = L.layerGroup().addTo(map);
@@ -1157,7 +1185,7 @@ function renderCountries() {
   const games = [...new Set([...S.routes.values()].map((r) => r.game || 'Без симулятора'))].sort((a, b) => a.localeCompare(b, 'ru'));
   if (S.game !== 'all' && !games.includes(S.game)) S.game = 'all';
   $('#game').hidden = games.length < 2 && games[0] === 'Без симулятора';
-  $('#game').innerHTML = `<option value="all">Все симуляторы</option>` + games.map((g) => `<option ${g === S.game ? 'selected' : ''}>${esc(g)}</option>`).join('');
+  $('#game').innerHTML = `<option value="all">Все игры</option>` + games.map((g) => `<option value="${esc(g)}" ${g === S.game ? 'selected' : ''}>${esc(g === 'Без симулятора' ? 'Без игры' : g)}</option>`).join('');
 }
 $('#country').addEventListener('change', (e) => { S.country = e.target.value; refresh(); fitAll(); });
 $('#game').addEventListener('change', (e) => { S.game = e.target.value; refresh(); fitAll(); });
@@ -1205,12 +1233,14 @@ function listView() {
     return `<div class="empty"><b>Карта пока пустая</b>Нажмите «Добавить маршрут» и проведите линию по карте кликами от станции к станции. Потом отметьте на ней станции, туннели и мосты через «Добавить объект».</div>`;
   }
   const groups = new Map();
-  routes.forEach(([id, r]) => { const c = r.country || 'Без страны'; if (!groups.has(c)) groups.set(c, []); groups.get(c).push([id, r]); });
+  routes.forEach(([id, r]) => { const c = r.game || 'Без симулятора'; if (!groups.has(c)) groups.set(c, []); groups.get(c).push([id, r]); });
   const totalKm = routes.reduce((s, [, r]) => s + routeKm(r), 0);
   let html = `<div class="group"><h3><span>${routes.length} ${plural(routes.length, 'маршрут', 'маршрута', 'маршрутов')} · ${(() => { const n = [...S.pois.values()].filter(poiVisible).length; return n + ' ' + plural(n, 'объект', 'объекта', 'объектов'); })()}</span><span>${num(totalKm)} км</span></h3></div>`;
-  [...groups].sort((a, b) => a[0].localeCompare(b[0], 'ru')).forEach(([c, list]) => {
+  // Игры по алфавиту, «Other» и маршруты без игры — в конце
+  const rank = (g) => (g === 'Без симулятора' ? 2 : /^(other|другое|прочее)$/i.test(g) ? 1 : 0);
+  [...groups].sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0], 'ru')).forEach(([c, list]) => {
     list.sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'ru'));
-    html += `<div class="group"><h3><span>${esc(c)}</span><span>${list.length}</span></h3>${list.map(([id, r]) => routeItem(id, r)).join('')}</div>`;
+    html += `<div class="group"><h3><span>${esc(c === 'Без симулятора' ? 'Без игры' : c)}</span><span>${list.length}</span></h3>${list.map(([id, r]) => routeItem(id, r)).join('')}</div>`;
   });
   const orphans = [...S.pois].filter(([, p]) => !S.routes.has(p.routeId) && poiVisible(p));
   if (orphans.length) html += `<div class="group"><h3><span>Объекты вне маршрутов</span><span>${orphans.length}</span></h3>${orphans.map(([id, p]) => poiItem(id, p)).join('')}</div>`;
@@ -1220,7 +1250,7 @@ function plural(n, a, b, c) { const m10 = n % 10, m100 = n % 100; return m10 ===
 function routeItem(id, r) {
   const n = [...S.pois.values()].filter((p) => p.routeId === id).length;
   const ex = r.example ? ' · <span class="tag">пример</span>' : '';
-  return `<button class="item" type="button" data-open="route" data-id="${esc(id)}"><span class="sw" style="background:${safeColor(r.color)}"></span><span class="nm">${esc(r.name || 'Без названия')}<span class="sub">${esc(r.game || r.operator || STATUS[r.status] || '')}${n ? ` · ${n} ${plural(n, 'объект', 'объекта', 'объектов')}` : ''}${ex}</span></span><span class="km">${num(routeKm(r))} км</span></button>`;
+  return `<button class="item" type="button" data-open="route" data-id="${esc(id)}"><span class="sw" style="background:${safeColor(r.color)}"></span><span class="nm">${esc(r.name || 'Без названия')}<span class="sub">${esc(r.country || r.operator || STATUS[r.status] || '')}${n ? ` · ${n} ${plural(n, 'объект', 'объекта', 'объектов')}` : ''}${ex}</span></span><span class="km">${num(routeKm(r))} км</span></button>`;
 }
 function poiItem(id, p, km) {
   const r = S.routes.get(p.routeId);
@@ -1247,7 +1277,7 @@ function routeView(id) {
     <h2 class="title">${esc(r.name)}</h2>
     <div class="rule" style="background:${safeColor(r.color)}${r.status === 'planned' ? ';opacity:.5' : ''}"></div>
     ${safeUrl(r.image) ? `<img class="cover" src="${esc(safeUrl(r.image))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
-    ${r.game ? `<div class="hint">Симулятор: <b>${esc(r.game)}</b></div>` : ''}
+    ${r.game ? `<div class="hint">Игра: <b>${esc(r.game)}</b></div>` : ''}
     ${r.operator ? `<div class="hint">Оператор: ${esc(r.operator)}</div>` : ''}
     <dl class="facts">${facts.map(([k, v, t]) => `<div><dt>${k}</dt><dd${t ? ' class="txt"' : ''}>${esc(v)}</dd></div>`).join('')}</dl>
     ${r.description ? `<p class="desc">${esc(r.description)}</p>` : ''}
@@ -1301,7 +1331,7 @@ function routeForm() {
       <label>Страна<input class="inp" id="rf-country" name="country" maxlength="60" value="${esc(f.country)}" list="countryList" placeholder="Россия"></label>
       <label>Статус<select id="rf-status" name="status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${f.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
     </div>
-    <label>Симулятор или коллекция<input class="inp" id="rf-game" name="game" maxlength="60" value="${esc(f.game)}" list="gameList" placeholder="TSW, Train Simulator Classic…"></label>
+    <label>Игра или коллекция<input class="inp" id="rf-game" name="game" maxlength="60" value="${esc(f.game)}" list="gameList" placeholder="TSW, Train Simulator Classic…"></label>
     <datalist id="gameList">${[...new Set([...S.routes.values()].map((r) => r.game).filter(Boolean))].map((g) => `<option value="${esc(g)}">`).join('')}</datalist>
     <label>Оператор<input class="inp" id="rf-operator" name="operator" maxlength="80" value="${esc(f.operator)}" placeholder="РЖД, DB, RhB…"></label>
     <div class="two">
