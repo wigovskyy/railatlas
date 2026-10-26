@@ -1003,7 +1003,7 @@ const store = {
       }, (e) => { setStatus('error', 'нет связи'); console.warn(e); });
       sub('routes', S.routes); sub('pois', S.pois);
       setStatus('live', 'общая база');
-    } else if (await this.initServer()) {
+    } else if (await this.initGithub() || await this.initServer()) {
       return;
     } else {
       this.mode = 'local';
@@ -1018,6 +1018,99 @@ const store = {
       setStatus('local', 'в этом браузере');
       refresh(true);
     }
+  },
+  // Хранилище в репозитории GitHub (сайт на GitHub Pages): все читают data.json из репозитория,
+  // а кто ввёл токен с правом записи, сохраняет изменения коммитами в этот же файл
+  gh: null,
+  async initGithub() {
+    const host = location.hostname;
+    if (!host.endsWith('.github.io')) return false;
+    const owner = host.split('.')[0], seg = location.pathname.split('/').filter(Boolean)[0];
+    const repo = seg && !seg.includes('.') ? seg : host;
+    this.gh = { owner, repo, token: '', ops: [], timer: null, saving: null, api: `https://api.github.com/repos/${owner}/${repo}` };
+    try { this.gh.token = localStorage.getItem('railatlas-gh-token') || ''; } catch (e) { /* без запоминания */ }
+    let d;
+    try { d = (await this.ghRead()).data; } catch (e) {
+      // API недоступен (лимит запросов и т. п.): показываем опубликованную копию
+      try { const res = await fetch('data.json', { cache: 'no-cache' }); if (res.ok) d = await res.json(); } catch (e2) { /* файла нет */ }
+    }
+    if (!d) return false;
+    this.mode = 'github'; loadInto(d);
+    S.canWrite = false;
+    if (this.gh.token) S.canWrite = await this.ghCheck();
+    this.statusText();
+    $('#status').style.cursor = 'pointer';
+    $('#status').title = 'Нажмите, чтобы ввести токен GitHub для редактирования';
+    $('#status').addEventListener('click', () => this.login());
+    window.addEventListener('beforeunload', (e) => { if (this.gh.ops.length || this.gh.saving) { e.preventDefault(); e.returnValue = ''; } });
+    refresh(true);
+    return true;
+  },
+  ghHeaders(extra) { return { Accept: 'application/vnd.github+json', ...(this.gh.token ? { Authorization: 'Bearer ' + this.gh.token } : {}), ...extra }; },
+  async ghRead() {
+    const res = await fetch(`${this.gh.api}/contents/data.json?t=${Date.now()}`, { headers: this.ghHeaders(), cache: 'no-store' });
+    if (res.status === 404) return { sha: null, data: { routes: [], pois: [] } };
+    if (!res.ok) throw new Error('GitHub ответил ' + res.status);
+    const meta = await res.json();
+    let text;
+    if (meta.content && meta.encoding === 'base64') text = new TextDecoder().decode(Uint8Array.from(atob(meta.content.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
+    else {
+      // файлы больше 1 МБ API отдаёт без содержимого, берём их отдельным запросом
+      const raw = await fetch(`${this.gh.api}/git/blobs/${meta.sha}`, { headers: this.ghHeaders({ Accept: 'application/vnd.github.raw+json' }), cache: 'no-store' });
+      if (!raw.ok) throw new Error('GitHub ответил ' + raw.status);
+      text = await raw.text();
+    }
+    return { sha: meta.sha, data: JSON.parse(text) };
+  },
+  async ghCheck() {
+    try {
+      const res = await fetch(this.gh.api, { headers: this.ghHeaders(), cache: 'no-store' });
+      if (!res.ok) return false;
+      const r = await res.json();
+      return !!(r.permissions && r.permissions.push);
+    } catch (e) { return false; }
+  },
+  ghQueue(coll, id, data) {
+    this.gh.ops.push({ coll, id, data });
+    this.statusText();
+    clearTimeout(this.gh.timer);
+    this.gh.timer = setTimeout(() => this.ghFlush(), 1500);
+  },
+  async ghFlush() {
+    const gh = this.gh;
+    if (gh.saving) { await gh.saving; if (gh.ops.length) return this.ghFlush(); return; }
+    if (!gh.ops.length) return;
+    const ops = gh.ops; gh.ops = [];
+    gh.saving = (async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        // Берём свежую версию файла и накладываем свои изменения: так не затираются правки с другого компьютера
+        const { sha, data } = await this.ghRead();
+        const maps = { routes: new Map((data.routes || []).map((o) => [o.id, o])), pois: new Map((data.pois || []).map((o) => [o.id, o])) };
+        for (const op of ops) { if (op.data) maps[op.coll].set(op.id, { id: op.id, ...op.data }); else maps[op.coll].delete(op.id); }
+        const out = { format: 'railatlas', version: 1, exportedAt: new Date().toISOString(), routes: [...maps.routes.values()], pois: [...maps.pois.values()] };
+        const bytes = new TextEncoder().encode(JSON.stringify(out));
+        let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        const first = ops[0], what = ops.length > 1 ? `изменений: ${ops.length}` : `${first.data ? 'правка' : 'удаление'}: ${(first.data && first.data.name) || first.id}`;
+        const res = await fetch(`${gh.api}/contents/data.json`, {
+          method: 'PUT', headers: this.ghHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ message: 'Карта: ' + what, content: btoa(bin), ...(sha ? { sha } : {}) }),
+        });
+        if (res.ok) {
+          // показываем то, что теперь лежит в репозитории, вместе с чужими правками
+          S.routes.clear(); S.pois.clear(); loadInto(out);
+          for (const op of gh.ops) { const m = op.coll === 'routes' ? S.routes : S.pois; if (op.data) m.set(op.id, op.data); else m.delete(op.id); }
+          refresh(false, true);
+          return;
+        }
+        if (res.status === 409 || res.status === 422) continue;  // файл успели изменить — читаем заново
+        if (res.status === 401 || res.status === 403) { S.canWrite = false; refresh(); throw new Error('GitHub не принял токен. Нажмите на статус внизу и введите его снова.'); }
+        throw new Error('GitHub ответил ' + res.status);
+      }
+      throw new Error('файл на GitHub всё время меняется, попробуйте ещё раз');
+    })();
+    try { await gh.saving; }
+    catch (e) { gh.ops = ops.concat(gh.ops); toast('Не сохранено на GitHub: ' + e.message); }
+    finally { gh.saving = null; this.statusText(); }
   },
   // Серверное хранилище (api.php рядом с сайтом): читают все, правит тот, кто ввёл ключ
   async initServer() {
@@ -1040,16 +1133,37 @@ const store = {
     refresh(true);
     return true;
   },
-  statusText() { setStatus(S.canWrite ? 'live' : 'local', S.canWrite ? 'на сервере, можно править' : 'на сервере, только просмотр'); },
+  statusText() {
+    if (this.mode === 'github') {
+      const g = this.gh, busy = g.saving || g.ops.length;
+      return setStatus(busy ? 'local' : S.canWrite ? 'live' : 'local', busy ? (g.saving ? 'сохраняю на GitHub…' : 'есть несохранённые правки') : S.canWrite ? 'GitHub, можно править' : 'GitHub, только просмотр');
+    }
+    setStatus(S.canWrite ? 'live' : 'local', S.canWrite ? 'на сервере, можно править' : 'на сервере, только просмотр');
+  },
   async checkKey() {
     try { const r = await fetch('api.php?action=check', { headers: { 'X-Edit-Key': this.key } }); return !!(await r.json()).canWrite; } catch (e) { return false; }
   },
   async login() {
+    if (this.mode === 'github') return this.ghLogin();
     if (S.canWrite) { if (!confirm('Выйти из режима редактирования?')) return; this.key = ''; try { localStorage.removeItem('railatlas-key'); } catch (e) { /* без запоминания */ } S.canWrite = false; this.statusText(); refresh(); return; }
     const k = prompt('Ключ редактирования:'); if (!k) return;
     this.key = k.trim();
     if (await this.checkKey()) { S.canWrite = true; try { localStorage.setItem('railatlas-key', this.key); } catch (e) { /* без запоминания */ } toast('Редактирование включено'); }
     else toast('Ключ не подошёл');
+    this.statusText(); refresh();
+  },
+  async ghLogin() {
+    const g = this.gh;
+    if (S.canWrite) {
+      if (g.ops.length || g.saving) return toast('Дождитесь, пока изменения сохранятся');
+      if (!confirm('Выйти из режима редактирования на этом компьютере?')) return;
+      g.token = ''; try { localStorage.removeItem('railatlas-gh-token'); } catch (e) { /* без запоминания */ }
+      S.canWrite = false; this.statusText(); refresh(); return;
+    }
+    const k = prompt(`Токен GitHub с правом записи в ${g.owner}/${g.repo} (Contents: Read and write):`); if (!k) return;
+    g.token = k.trim();
+    if (await this.ghCheck()) { S.canWrite = true; try { localStorage.setItem('railatlas-gh-token', g.token); } catch (e) { /* без запоминания */ } toast('Редактирование включено'); }
+    else { g.token = ''; toast('Токен не подошёл или у него нет права записи'); }
     this.statusText(); refresh();
   },
   async serverCall(action, coll, id, body) {
@@ -1063,15 +1177,17 @@ const store = {
   async put(coll, id, data) {
     const map = coll === 'routes' ? S.routes : S.pois;
     if (this.mode === 'server') { await this.serverCall('put', coll, id, JSON.stringify(data)); map.set(id, data); }
+    else if (this.mode === 'github') { if (!S.canWrite) throw new Error('введите токен GitHub'); map.set(id, data); this.ghQueue(coll, id, data); }
     else if (this.db) { await this.db.collection(coll).doc(id).set(data); map.set(id, data); }
     else { map.set(id, data); this.persistLocal(); }
   },
   async remove(coll, id) {
     const map = coll === 'routes' ? S.routes : S.pois;
     if (this.mode === 'server') await this.serverCall('delete', coll, id, '');
+    else if (this.mode === 'github') { if (!S.canWrite) throw new Error('введите токен GitHub'); this.ghQueue(coll, id, null); }
     else if (this.db) await this.db.collection(coll).doc(id).delete();
     map.delete(id);
-    if (!this.db && this.mode !== 'server') this.persistLocal();
+    if (!this.db && this.mode !== 'server' && this.mode !== 'github') this.persistLocal();
   },
 };
 function setStatus(cls, text) { const el = $('#status'); el.className = 'status ' + cls; el.innerHTML = '<i></i>' + esc(text); }
