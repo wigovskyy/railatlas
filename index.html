@@ -1119,7 +1119,7 @@ new MutationObserver(restyleBase).observe(document.documentElement, { attributes
 
 const allLines = (r) => [r.path || [], ...(Array.isArray(r.branches) ? r.branches : [])].filter((l) => l.length > 1);
 // Ближайшая точка на любой линии маршрута (основной или ветке)
-function routeChainage(r, pt) { let best = null; for (const l of allLines(r)) { const c = chainage(l, pt); if (c && (!best || c.off < best.off)) best = c; } return best; }
+function routeChainage(r, pt) { let best = null; allLines(r).forEach((l, i) => { const c = chainage(l, pt); if (c && (!best || c.off < best.off)) best = { ...c, line: i }; }); return best; }
 function routeVisible(r) { return (S.country === 'all' || (r.country || 'Без страны') === S.country) && (S.game === 'all' || (r.game || 'Без симулятора') === S.game); }
 function poiCountry(p) { const r = S.routes.get(p.routeId); return r ? (r.country || 'Без страны') : (p.country || 'Без страны'); }
 function poiVisible(p) { const r = S.routes.get(p.routeId); return S.types.has(p.type) && (S.country === 'all' || poiCountry(p) === S.country) && (S.game === 'all' || (r ? (r.game || 'Без симулятора') === S.game : false)); }
@@ -1215,8 +1215,8 @@ function poisOfRoute(id) {
   const r = S.routes.get(id);
   return [...S.pois].filter(([, p]) => p.routeId === id).map(([pid, p]) => {
     const c = r && routeChainage(r, [p.lat, p.lng]);
-    return { id: pid, p, km: c ? c.along / 1000 : null };
-  }).sort((a, b) => (a.km ?? 0) - (b.km ?? 0));
+    return { id: pid, p, km: c ? c.along / 1000 : null, line: c ? c.line : 0 };
+  }).sort((a, b) => a.line - b.line || (a.km ?? 0) - (b.km ?? 0));
 }
 
 function renderPanel() {
@@ -1262,9 +1262,9 @@ function routeItem(id, r) {
   const ex = r.example ? ' · <span class="tag">пример</span>' : '';
   return `<button class="item" type="button" data-open="route" data-id="${esc(id)}"><span class="sw" style="background:${safeColor(r.color)}"></span><span class="nm">${esc(r.name || 'Без названия')}<span class="sub">${esc(r.country || r.operator || STATUS[r.status] || '')}${n ? ` · ${n} ${plural(n, 'объект', 'объекта', 'объектов')}` : ''}${ex}</span></span><span class="km">${num(routeKm(r))} км</span></button>`;
 }
-function poiItem(id, p, km) {
+function poiItem(id, p, km, line) {
   const r = S.routes.get(p.routeId);
-  return `<button class="item" type="button" data-open="poi" data-id="${esc(id)}">${smallIco(p.type)}<span class="nm">${esc(p.name || 'Без названия')}<span class="sub">${esc(TYPES[p.type]?.label || '')}${r && km == null ? ' · ' + esc(r.name) : ''}</span></span><span class="km">${km != null ? 'км ' + num(km, 1) : ''}</span></button>`;
+  return `<button class="item" type="button" data-open="poi" data-id="${esc(id)}">${smallIco(p.type)}<span class="nm">${esc(p.name || 'Без названия')}<span class="sub">${esc(TYPES[p.type]?.label || '')}${line ? ' · ветка ' + line : ''}${r && km == null ? ' · ' + esc(r.name) : ''}</span></span><span class="km">${km != null ? 'км ' + num(km, 1) : ''}</span></button>`;
 }
 
 function routeView(id) {
@@ -1293,7 +1293,7 @@ function routeView(id) {
     ${r.description ? `<p class="desc">${esc(r.description)}</p>` : ''}
     ${safeUrl(r.link) ? `<p><a href="${esc(safeUrl(r.link))}" target="_blank" rel="noopener">${/steampowered|steamcommunity/.test(r.link) ? 'Страница в Steam ↗' : 'Подробнее о маршруте ↗'}</a></p>` : ''}
     <div class="group"><h3><span>По ходу маршрута</span><span>${list.length}</span></h3>
-    ${list.length ? `<ul class="timeline" style="--rc:${safeColor(r.color)}">${list.map(({ id: pid, p, km }) => `<li>${poiItem(pid, p, km)}</li>`).join('')}</ul>` : `<p class="hint">На маршруте пока нет объектов. Нажмите «Добавить объект» и кликните рядом с линией: объект сам привяжется к маршруту.</p>`}
+    ${list.length ? `<ul class="timeline" style="--rc:${safeColor(r.color)}">${list.map(({ id: pid, p, km, line }) => `<li>${poiItem(pid, p, km, line)}</li>`).join('')}</ul>` : `<p class="hint">На маршруте пока нет объектов. Нажмите «Добавить объект» и кликните рядом с линией: объект сам привяжется к маршруту.</p>`}
     </div>
     ${S.canWrite ? `<div class="actions"><button class="btn" data-act="findObjects" type="button">Найти станции, туннели и мосты</button><button class="btn" data-act="addPoiHere" type="button">+ Объект вручную</button><button class="btn" data-act="editRoute" type="button">Изменить</button>${delBtn('route')}</div>` : ''}`;
 }
@@ -1354,6 +1354,7 @@ function routeForm() {
     <label>Ссылка<input class="inp" id="rf-link" name="link" type="url" maxlength="400" value="${esc(f.link)}" placeholder="https://…"></label>
     <label>Картинка (адрес изображения)<input class="inp" id="rf-image" name="image" type="url" maxlength="1000" value="${esc(f.image)}" placeholder="https://…"></label>
     <datalist id="countryList">${[...new Set([...S.routes.values()].map((r) => r.country).filter(Boolean))].map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+    ${(d.branches || []).length || d.id ? `<div><div class="hint" style="margin-bottom:6px">Ветки маршрута</div>${(d.branches || []).map((l, i) => `<div class="row" style="justify-content:space-between;margin-bottom:4px"><span>Ветка ${i + 1} · ${num(pathLength(l) / 1000, 1)} км</span><button class="btn sm danger" type="button" data-act="delBranch" data-i="${i}">Удалить</button></div>`).join('')}<button class="btn sm" type="button" data-act="addBranch">+ Добавить ветку</button></div>` : ''}
     <div class="err" id="rf-err"></div>
     <div class="actions"><button class="btn primary" type="submit">Сохранить маршрут</button><button class="btn" type="button" data-act="redraw">Изменить линию</button></div>
   </form>`;
@@ -1410,6 +1411,8 @@ $('#panel').addEventListener('click', async (e) => {
   else if (act === 'addPoiHere') startPlacePoi(S.view.id);
   else if (act === 'cancelForm') cancelAll();
   else if (act === 'redraw') { syncRouteForm(); startDrawing(); }
+  else if (act === 'delBranch') { syncRouteForm(); S.draft.branches.splice(+a.dataset.i, 1); renderPanel(); drawDraft(); }
+  else if (act === 'addBranch') { syncRouteForm(); startBranch(); }
   else if (act === 'findObjects') findObjects(S.view.id);
   else if (act === 'finderAll' || act === 'finderNone') { S.view.items.forEach((o) => { o.checked = act === 'finderAll'; }); renderPanel(); }
   else if (act === 'finderAdd') addFound();
@@ -1441,7 +1444,7 @@ async function saveRoute(form) {
     opened: f.opened.slice(0, 20), gauge: f.gauge.slice(0, 6), electrification: f.electrification.slice(0, 60),
     color: safeColor(f.color), description: f.description.slice(0, 4000), link: safeUrl(f.link),
     game: (f.game || '').slice(0, 60), image: safeUrl(f.image),
-    path: d.path.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)]), lengthKm: +((pathLength(d.path) + (prev.branches || []).reduce((s, l) => s + pathLength(l), 0)) / 1000).toFixed(2),
+    path: d.path.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)]), branches: (d.branches || []).map((l) => l.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)])), lengthKm: +((pathLength(d.path) + (d.branches || []).reduce((s, l) => s + pathLength(l), 0)) / 1000).toFixed(2),
     waypoints: d.wps.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)]), segEnds: d.segEnds.slice(), segRail: d.segs.map((s) => !!(s.rail && !s.failed)),
     updatedAt: new Date().toISOString(),
   };
@@ -1483,12 +1486,12 @@ const emptyRouteForm = () => ({ name: '', game: S.game !== 'all' && S.game !== '
 function setStatusNote() { if (S.mode === 'draw') renderBanner(); }
 function startNewRoute() {
   cancelAll();
-  S.draft = { id: null, wps: [], segs: [], path: [], segEnds: [], rail: S.railAvailable !== false, form: emptyRouteForm() };
+  S.draft = { id: null, wps: [], segs: [], path: [], segEnds: [], branches: [], rail: S.railAvailable !== false, form: emptyRouteForm() };
   startDrawing();
 }
 function startRouteEdit(id) {
   const r = S.routes.get(id); if (!r) return;
-  const d = { id, wps: [], segs: [], path: [], segEnds: [], rail: S.railAvailable !== false, form: { ...emptyRouteForm(), ...r } };
+  const d = { id, wps: [], segs: [], path: [], segEnds: [], branches: (Array.isArray(r.branches) ? r.branches : []).map((l) => l.map((p) => [...p])), rail: S.railAvailable !== false, form: { ...emptyRouteForm(), ...r } };
   if (Array.isArray(r.waypoints) && Array.isArray(r.segEnds) && r.segEnds.length === r.waypoints.length - 1) {
     d.wps = r.waypoints.map((p) => [...p]);
     let from = 0;
@@ -1509,9 +1512,20 @@ function startDrawing() {
   refresh(); drawDraft(); renderBanner();
 }
 const pendingSegs = (d) => d.segs.some((s) => s.pending);
+function startBranch() {
+  const d = S.draft;
+  d.main = { wps: d.wps, segs: d.segs, path: d.path, segEnds: d.segEnds };
+  d.wps = []; d.segs = []; d.path = []; d.segEnds = []; d.branchMode = true;
+  startDrawing();
+}
+function restoreMain(d) {
+  if (!d.main) return;
+  Object.assign(d, d.main); d.main = null; d.branchMode = false;
+}
 function finishDrawing() {
   const d = S.draft;
   if (d.wps.length < 2 || pendingSegs(d)) return;
+  if (d.branchMode) { d.branches.push(d.path.slice()); restoreMain(d); }
   S.mode = null; document.body.classList.remove('drawing');
   $('#banner').hidden = true; S.view = { name: 'routeForm' }; refresh(); drawDraft();
 }
@@ -1570,6 +1584,7 @@ function addVertex(ll) {
   let best = null, bd = 14;
   const cand = [...S.pois.values()].filter(poiVisible).map((p) => [p.lat, p.lng]);
   for (const [id, r] of S.routes) if (r.path && r.path.length && id !== d.id) cand.push(r.path[0], r.path[r.path.length - 1]);
+  if (d.main) d.main.path.forEach((c) => cand.push(c)); // ветка прилипает к основной линии
   for (const c of cand) { const dd = map.latLngToContainerPoint(c).distanceTo(pt); if (dd < bd) { bd = dd; best = c; } }
   d.wps.push(best ? [best[0], best[1]] : [ll[0], ll[1]]);
   if (d.wps.length > 1) { d.segs.push({ rail: d.rail }); routeSeg(d, d.segs.length - 1); }
@@ -1592,13 +1607,18 @@ function drawDraft() {
   draftLayer.clearLayers();
   if (!S.draft) return;
   const d = S.draft, color = safeColor(d.form.color);
+  const others = [...(d.branches || []), ...(d.main ? [d.main.path] : [])].filter((l) => l.length > 1);
+  others.forEach((l) => {
+    draftLayer.addLayer(L.polyline(l, { color: css('--surface'), weight: 9, interactive: false }));
+    draftLayer.addLayer(L.polyline(l, { color, weight: 5, interactive: false, lineJoin: 'round', opacity: d.main && l === d.main.path ? 0.6 : 1 }));
+  });
   if (d.path.length > 1) {
     draftLayer.addLayer(L.polyline(d.path, { color: css('--surface'), weight: 9, interactive: false }));
     draftLayer.addLayer(L.polyline(d.path, { color, weight: 5, interactive: false, lineJoin: 'round' }));
   }
   d.segs.forEach((s, i) => {
     if (s.pending) draftLayer.addLayer(L.polyline([d.wps[i], d.wps[i + 1]], { color: css('--muted'), weight: 3, dashArray: '4 8', interactive: false }));
-    else if (!s.rail || s.failed) draftLayer.addLayer(L.polyline(s.coords || [d.wps[i], d.wps[i + 1]], { color: css('--surface'), weight: 2, dashArray: '6 8', interactive: false }));
+    else if ((!s.rail || s.failed) && !s.fixed) draftLayer.addLayer(L.polyline(s.coords || [d.wps[i], d.wps[i + 1]], { color: css('--surface'), weight: 2, dashArray: '6 8', interactive: false }));
   });
   if (S.mode !== 'draw' && S.view.name !== 'routeForm') return;
   d.wps.forEach((p, i) => {
@@ -1616,7 +1636,8 @@ function updateFormMeta() {
 }
 function draftMeta(d) {
   const n = d.wps.length, railKm = d.segs.reduce((s, sg) => s + (sg.rail && !sg.failed && sg.coords ? pathLength(sg.coords) : 0), 0) / 1000;
-  return `${n} ${plural(n, 'опорная точка', 'опорные точки', 'опорных точек')} · ${num(pathLength(d.path) / 1000, 1)} км${railKm ? ` · по рельсам ${num(railKm, 1)} км` : ''}`;
+  const bk = (d.branches || []).reduce((s, l) => s + pathLength(l), 0) / 1000;
+  return `${n} ${plural(n, 'опорная точка', 'опорные точки', 'опорных точек')} · ${num(pathLength(d.path) / 1000 + bk, 1)} км${railKm ? ` · по рельсам ${num(railKm, 1)} км` : ''}${bk ? ` · веток ${d.branches.length}` : ''}`;
 }
 function renderBanner() {
   const b = $('#banner');
@@ -1625,7 +1646,7 @@ function renderBanner() {
     const hint = d.rail
       ? 'Ставьте точки на станциях или на самой линии, маршрут сам пойдёт по рельсам со всеми поворотами. На длинных маршрутах ставьте точки каждые 100–200 км. Точки можно перетаскивать, двойной клик удаляет.'
       : 'Кликайте по карте от начала к концу: точки соединяются прямыми. Клик рядом со станцией привязывает точку к ней.';
-    b.innerHTML = `<div><strong>Проведите маршрут</strong><div class="hint">${hint}</div>${blocked ? `<div class="hint" style="color:var(--t-landmark)">${esc(RAIL_BLOCKED_MSG)}</div>` : ''}</div>
+    b.innerHTML = `<div><strong>${d.branchMode ? 'Проведите ветку' : 'Проведите маршрут'}</strong><div class="hint">${hint}</div>${blocked ? `<div class="hint" style="color:var(--t-landmark)">${esc(RAIL_BLOCKED_MSG)}</div>` : ''}</div>
       <label class="row hint" style="gap:6px;cursor:pointer"><input type="checkbox" id="railToggle" ${d.rail ? 'checked' : ''} ${blocked ? 'disabled' : ''}> Прокладывать по рельсам (данные OpenStreetMap)</label>
       <div class="meta">${draftMeta(d)}${busy ? ' · прокладываю по рельсам…' : ''}</div>
       <div class="row"><button class="btn primary" data-b="done" type="button" ${n < 2 || busy ? 'disabled' : ''}>Готово</button><button class="btn" data-b="undo" type="button" ${n ? '' : 'disabled'}>Убрать последнюю</button><button class="btn" data-b="cancel" type="button">Отмена</button></div>`;
@@ -1796,15 +1817,17 @@ async function findObjects(routeId) {
   const r = S.routes.get(routeId); if (!r) return;
   S.view = { name: 'finder', id: routeId, state: 'loading', items: [] }; renderPanel();
   try {
-    let tol = 60, pts = simplify(r.path, tol);
-    while (pts.length > 500) { tol *= 2; pts = simplify(r.path, tol); }
-    const around = pts.map((p) => p[0].toFixed(5) + ',' + p[1].toFixed(5)).join(',');
+    const lines = allLines(r);
+    let tol = 60, parts = lines.map((l) => simplify(l, tol));
+    while (parts.reduce((s, l) => s + l.length, 0) > 600) { tol *= 2; parts = lines.map((l) => simplify(l, tol)); }
     const rad = Math.min(400, 60 + tol);
+    const arounds = parts.map((pts) => `(around:${rad},${pts.map((p) => p[0].toFixed(5) + ',' + p[1].toFixed(5)).join(',')})`);
+    const union = (sel) => '(' + arounds.map((a) => `${sel}${a};`).join('') + ')';
     const q = `[out:json][timeout:180];
-node["railway"~"^(station|halt)$"](around:${rad},${around})->.st;
+${union('node["railway"~"^(station|halt)$"]')}->.st;
 .st out body qt;
-way["railway"~"${RAIL_RE}"]["tunnel"]["tunnel"!="no"](around:${rad},${around})->.tn;
-way["railway"~"${RAIL_RE}"]["bridge"]["bridge"!="no"](around:${rad},${around})->.br;
+${union(`way["railway"~"${RAIL_RE}"]["tunnel"]["tunnel"!="no"]`)}->.tn;
+${union(`way["railway"~"${RAIL_RE}"]["bridge"]["bridge"!="no"]`)}->.br;
 (.tn;.br;);
 out tags geom qt;`;
     const data = await overpass(q);
@@ -1824,11 +1847,11 @@ function collectObjects(r, els) {
     if (el.type !== 'node') continue;
     const t = el.tags || {};
     if (t.station === 'subway' || t.station === 'light_rail' || t.station === 'funicular') continue;
-    const c = chainage(r.path, [el.lat, el.lon]); if (!c || c.off > 350) continue;
+    const c = routeChainage(r, [el.lat, el.lon]); if (!c || c.off > 350) continue;
     const type = t.railway === 'halt' ? 'halt' : 'station', name = nm(t);
     const key = (name || el.id) + '';
     if (seenSt.has(key)) continue; seenSt.add(key);
-    out.push({ type, name: name || 'Станция без названия', lat: el.lat, lng: el.lon, km: c.along / 1000, link: 'https://www.openstreetmap.org/node/' + el.id, exists: near(el.lat, el.lon, ['station', 'halt'], 200), extra: t.ele ? { elevationM: numOrNull(t.ele) } : {} });
+    out.push({ type, name: name || 'Станция без названия', lat: el.lat, lng: el.lon, km: c.along / 1000, line: c.line, link: 'https://www.openstreetmap.org/node/' + el.id, exists: near(el.lat, el.lon, ['station', 'halt'], 200), extra: t.ele ? { elevationM: numOrNull(t.ele) } : {} });
   }
   // Туннели и мосты: соседние куски одного сооружения (и параллельные пути) объединяются
   const pieces = [];
@@ -1839,24 +1862,25 @@ function collectObjects(r, els) {
     if (!isT && !(t.bridge && t.bridge !== 'no')) continue;
     const type = isT ? 'tunnel' : t.bridge === 'viaduct' ? 'viaduct' : 'bridge';
     const mid = g[Math.floor(g.length / 2)];
-    const cm = chainage(r.path, mid); if (!cm || cm.off > 30) continue;
-    const c0 = chainage(r.path, g[0]).along, c1 = chainage(r.path, g[g.length - 1]).along;
-    pieces.push({ type, s: Math.min(c0, c1), e: Math.max(c0, c1), len: pathLength(g), name: nm(t, isT ? 'tunnel:name' : 'bridge:name'), id: el.id, t });
+    const cm = routeChainage(r, mid); if (!cm || cm.off > 30) continue;
+    const ln = allLines(r)[cm.line];
+    const c0 = chainage(ln, g[0]).along, c1 = chainage(ln, g[g.length - 1]).along;
+    pieces.push({ line: cm.line, type, s: Math.min(c0, c1), e: Math.max(c0, c1), len: pathLength(g), name: nm(t, isT ? 'tunnel:name' : 'bridge:name'), id: el.id, t });
   }
-  pieces.sort((a, b) => a.s - b.s);
+  pieces.sort((a, b) => a.line - b.line || a.s - b.s);
   const groups = [];
   for (const p of pieces) {
-    const g = groups.find((x) => (x.type === p.type || (x.type !== 'tunnel' && p.type !== 'tunnel')) && p.s <= x.e + 30 && p.e >= x.s - 30);
+    const g = groups.find((x) => x.line === p.line && (x.type === p.type || (x.type !== 'tunnel' && p.type !== 'tunnel')) && p.s <= x.e + 30 && p.e >= x.s - 30);
     if (g) { g.s = Math.min(g.s, p.s); g.e = Math.max(g.e, p.e); g.maxLen = Math.max(g.maxLen, p.len); if (!g.name && p.name) g.name = p.name; if (p.type === 'viaduct') g.type = 'viaduct'; }
     else groups.push({ ...p, maxLen: p.len });
   }
   for (const g of groups) {
     const len = Math.max(g.e - g.s, g.maxLen);
     if (len < (g.type === 'tunnel' ? 20 : 25)) continue;
-    const at = pointAt(r.path, (g.s + g.e) / 2);
-    out.push({ type: g.type, name: g.name || `${TYPES[g.type].label} без названия, ${num(len)} м`, lat: at[0], lng: at[1], km: (g.s + g.e) / 2000, link: 'https://www.openstreetmap.org/way/' + g.id, exists: near(at[0], at[1], [g.type], 120), extra: { lengthM: Math.round(len) } });
+    const at = pointAt(allLines(r)[g.line], (g.s + g.e) / 2);
+    out.push({ type: g.type, name: g.name || `${TYPES[g.type].label} без названия, ${num(len)} м`, lat: at[0], lng: at[1], km: (g.s + g.e) / 2000, line: g.line, link: 'https://www.openstreetmap.org/way/' + g.id, exists: near(at[0], at[1], [g.type], 120), extra: { lengthM: Math.round(len) } });
   }
-  out.sort((a, b) => a.km - b.km);
+  out.sort((a, b) => a.line - b.line || a.km - b.km);
   out.forEach((o) => { o.checked = !o.exists; });
   return out;
 }
@@ -1870,7 +1894,7 @@ function finderView() {
   const counts = {}; v.items.forEach((o) => { counts[o.type] = (counts[o.type] || 0) + 1; });
   return head + `<p class="hint">Найдено: ${Object.entries(counts).map(([k, c]) => `${TYPES[k].plural.toLowerCase()} ${c}`).join(', ')}. Уже отмеченные на карте сняты с выбора.</p>
     <div class="row" style="margin:8px 0"><button class="btn sm" data-act="finderAll" type="button">Выбрать все</button><button class="btn sm" data-act="finderNone" type="button">Снять все</button></div>
-    <ul class="timeline" style="--rc:${safeColor(r && r.color)}">${v.items.map((o, i) => `<li><label class="item"><input type="checkbox" data-fi="${i}" ${o.checked ? 'checked' : ''} style="margin:0 0 0 1px;accent-color:${safeColor(r && r.color)}"><span class="nm">${esc(o.name)}<span class="sub">${smallIco(o.type).replace('class="ico"', 'class="ico" style="display:inline-grid;vertical-align:-4px;margin-right:4px;' + (o.type === 'station' || o.type === 'halt' ? '' : 'background:' + TYPES[o.type].color) + '"')}${esc(TYPES[o.type].label)}${o.extra.lengthM ? ' · ' + num(o.extra.lengthM) + ' м' : ''}${o.exists ? ' · уже на карте' : ''}</span></span><span class="km">км ${num(o.km, 1)}</span></label></li>`).join('')}</ul>
+    <ul class="timeline" style="--rc:${safeColor(r && r.color)}">${v.items.map((o, i) => `<li><label class="item"><input type="checkbox" data-fi="${i}" ${o.checked ? 'checked' : ''} style="margin:0 0 0 1px;accent-color:${safeColor(r && r.color)}"><span class="nm">${esc(o.name)}<span class="sub">${smallIco(o.type).replace('class="ico"', 'class="ico" style="display:inline-grid;vertical-align:-4px;margin-right:4px;' + (o.type === 'station' || o.type === 'halt' ? '' : 'background:' + TYPES[o.type].color) + '"')}${esc(TYPES[o.type].label)}${o.line ? ' · ветка ' + o.line : ''}${o.extra.lengthM ? ' · ' + num(o.extra.lengthM) + ' м' : ''}${o.exists ? ' · уже на карте' : ''}</span></span><span class="km">км ${num(o.km, 1)}</span></label></li>`).join('')}</ul>
     <div class="actions"><button class="btn primary" data-act="finderAdd" type="button" ${n ? '' : 'disabled'}>Добавить выбранные (${n})</button></div>`;
 }
 async function addFound() {
@@ -1924,6 +1948,11 @@ function drawPoiDraft() {
 }
 
 function cancelAll() {
+  if (S.draft && S.draft.branchMode) {
+    // Отмена ветки возвращает к форме маршрута, сам маршрут не теряется
+    restoreMain(S.draft); S.mode = null; document.body.classList.remove('drawing'); $('#banner').hidden = true;
+    S.view = { name: 'routeForm' }; refresh(); drawDraft(); return;
+  }
   S.mode = null; S.draft = null; S.poiDraft = null; S.placeRoute = null;
   document.body.classList.remove('drawing'); draftLayer.clearLayers(); $('#banner').hidden = true;
   if (S.view.name === 'routeForm' || S.view.name === 'poiForm') S.view = { name: 'list' };
