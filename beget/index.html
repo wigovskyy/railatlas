@@ -750,7 +750,9 @@ textarea { resize: vertical; min-height: 84px; }
 .facts dt { font-size: 11.5px; color: var(--muted); }
 .facts dd { margin: 1px 0 0; font: 500 15px var(--f-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .facts dd.txt { font-family: var(--f-body); font-weight: 600; }
-.cover { display: block; width: 100%; max-height: 190px; object-fit: cover; border-radius: 10px; margin: 2px 0 10px; background: var(--hover); }
+.cover { cursor: zoom-in; display: block; width: 100%; max-height: 190px; object-fit: cover; border-radius: 10px; margin: 2px 0 10px; background: var(--hover); }
+.lightbox { position: fixed; inset: 0; z-index: 5000; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0,0,0,.88); cursor: zoom-out; }
+.lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
 .desc { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 65ch; }
 .coords { font: 12px var(--f-mono); color: var(--muted); }
 .tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font: 600 11px/1.4 var(--f-display); letter-spacing: .08em; text-transform: uppercase; background: var(--hover); color: var(--muted); }
@@ -2131,7 +2133,7 @@ out tags geom qt;`;
   if (S.view.name === 'finder') renderPanel();
 }
 function collectObjects(r, els) {
-  const nm = (t, alt) => t['name:ru'] || t[alt] || t.name || '';
+  const nm = (t, alt) => t['name:en'] || t.int_name || t[alt] || t.name || '';
   const near = (lat, lng, types, m) => [...S.pois.values()].some((p) => types.includes(p.type) && hav([p.lat, p.lng], [lat, lng]) < m);
   const out = [], seenSt = new Set();
   for (const el of els) {
@@ -2166,10 +2168,11 @@ function collectObjects(r, els) {
     else groups.push({ ...p, maxLen: p.len });
   }
   for (const g of groups) {
+    if (!g.name) continue;
     const len = Math.max(g.e - g.s, g.maxLen);
     if (len < (g.type === 'tunnel' ? 20 : 25)) continue;
     const at = pointAt(allLines(r)[g.line], (g.s + g.e) / 2);
-    out.push({ type: g.type, name: g.name || `${TYPES[g.type].label} без названия, ${num(len)} м`, lat: at[0], lng: at[1], km: (g.s + g.e) / 2000, line: g.line, link: 'https://www.openstreetmap.org/way/' + g.id, exists: near(at[0], at[1], [g.type], 120), extra: { lengthM: Math.round(len) } });
+    out.push({ type: g.type, name: g.name, lat: at[0], lng: at[1], km: (g.s + g.e) / 2000, line: g.line, link: 'https://www.openstreetmap.org/way/' + g.id, exists: near(at[0], at[1], [g.type], 120), extra: { lengthM: Math.round(len) } });
   }
   out.sort((a, b) => a.line - b.line || a.km - b.km);
   out.forEach((o) => { o.checked = !o.exists; });
@@ -2322,7 +2325,26 @@ map.on('click', (e) => {
   if (S.mode === 'draw') addVertex([e.latlng.lat, e.latlng.lng]);
   else if (S.mode === 'placePoi') placePoiAt(ll);
 });
+// Фото из карточки открывается на весь экран по клику, закрывается кликом или Esc
+function closeLightbox() { const lb = document.querySelector('.lightbox'); if (lb) lb.remove(); }
+document.addEventListener('click', (e) => {
+  const lb = e.target.closest('.lightbox');
+  if (lb) { lb.remove(); return; }
+  const img = e.target.closest('img.cover');
+  if (!img) return;
+  const big = img.src.replace(/([?&]width=)\d+/, '$12000');
+  const box = document.createElement('div');
+  box.className = 'lightbox';
+  const full = document.createElement('img');
+  full.alt = img.alt || '';
+  full.referrerPolicy = 'no-referrer';
+  full.onerror = () => { if (full.src !== img.src) full.src = img.src; };
+  full.src = big;
+  box.append(full);
+  document.body.append(box);
+});
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && document.querySelector('.lightbox')) { closeLightbox(); return; }
   if (e.key === 'Escape' && S.mode) cancelAll();
   if (e.key === 'Enter' && S.mode === 'draw' && S.draft.wps.length > 1 && !pendingSegs(S.draft) && !e.target.closest('input,textarea')) finishDrawing();
 });
