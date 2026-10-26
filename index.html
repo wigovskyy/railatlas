@@ -677,6 +677,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
   --accent: #C3312D; --accent-fg: #FFFFFF; --hover: #E6EAEC; --shadow: 0 6px 24px rgba(20,30,45,.16);
   --t-station: #1B2330; --t-halt: #56606E; --t-tunnel: #6A5A94; --t-bridge: #2C77AE;
   --t-viaduct: #23806F; --t-depot: #87672F; --t-landmark: #C57C12;
+  --orm-filter: grayscale(1) contrast(1.4) brightness(.75);
   --f-display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
   --f-body: "Barlow", "Segoe UI", system-ui, sans-serif;
   --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
@@ -685,13 +686,13 @@ svg.leaflet-image-layer.leaflet-interactive path {
   --bg: #121820; --surface: #19212A; --fg: #E5E9ED; --muted: #94A0AD; --line: #2A343F;
   --sea: #0D1822; --land: #1D252C; --cborder: #364149;
   --accent: #EE6159; --accent-fg: #1A0B0A; --hover: #232D37; --shadow: 0 6px 24px rgba(0,0,0,.5);
-  --t-station: #E5E9ED; --t-halt: #A9B3BE; color-scheme: dark;
+  --t-station: #E5E9ED; --t-halt: #A9B3BE; --orm-filter: grayscale(1) invert(1) brightness(1.1); color-scheme: dark;
 } }
 :root[data-theme="dark"] {
   --bg: #121820; --surface: #19212A; --fg: #E5E9ED; --muted: #94A0AD; --line: #2A343F;
   --sea: #0D1822; --land: #1D252C; --cborder: #364149;
   --accent: #EE6159; --accent-fg: #1A0B0A; --hover: #232D37; --shadow: 0 6px 24px rgba(0,0,0,.5);
-  --t-station: #E5E9ED; --t-halt: #A9B3BE; color-scheme: dark;
+  --t-station: #E5E9ED; --t-halt: #A9B3BE; --orm-filter: grayscale(1) invert(1) brightness(1.1); color-scheme: dark;
 }
 html, body { height: 100%; }
 body { background: var(--bg); color: var(--fg); font: 15px/1.45 var(--f-body); overflow: hidden; }
@@ -776,6 +777,7 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .mapwrap { position: relative; min-width: 0; }
 #map { position: absolute; inset: 0; background: var(--sea); }
+.orm-gray { filter: var(--orm-filter); }
 .leaflet-container { font-family: var(--f-body); background: var(--sea); }
 .maptools { position: absolute; z-index: 800; top: calc(12px + env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .maptools .btn { box-shadow: var(--shadow); }
@@ -838,8 +840,8 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
       <div class="row">
         <select id="country" aria-label="Страна"></select>
         <button class="btn sm" id="exportBtn" type="button" title="Сохранить все данные в файл JSON">Экспорт</button>
-        <label class="btn sm" for="importFile" title="Загрузить маршруты из файла JSON">Импорт</label>
-        <input id="importFile" type="file" accept="application/json,.json" hidden>
+        <label class="btn sm" for="importFile" title="Загрузить маршруты: файл атласа (JSON) или KML/KMZ из Google Мои карты">Импорт</label>
+        <input id="importFile" type="file" accept="application/json,.json,.kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz" hidden>
       </div>
     </div>
     <div class="panel" id="panel"></div>
@@ -860,6 +862,7 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 (function () {
 'use strict';
@@ -1033,8 +1036,9 @@ const TILES = {
   osm: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: OSM_ATTR }),
   sat: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics' }),
 };
-const ormLayer = (style) => L.tileLayer(`https://{s}.tiles.openrailwaymap.org/${style}/{z}/{x}/{y}.png`, { subdomains: 'abc', maxZoom: 19, attribution: '<a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>' });
-const ORM = { standard: ormLayer('standard'), maxspeed: ormLayer('maxspeed'), electrification: ormLayer('electrification'), gauge: ormLayer('gauge') };
+const ormLayer = (style, extra) => L.tileLayer(`https://{s}.tiles.openrailwaymap.org/${style}/{z}/{x}/{y}.png`, { subdomains: 'abc', maxZoom: 19, attribution: '<a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>', ...extra });
+// Общая сеть — серая и полупрозрачная, чтобы не спорить с маршрутами; тематические слои остаются цветными
+const ORM = { standard: ormLayer('standard', { className: 'orm-gray', opacity: 0.55 }), maxspeed: ormLayer('maxspeed'), electrification: ormLayer('electrification'), gauge: ormLayer('gauge') };
 
 const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light' || document.documentElement.dataset.theme === 'dark';
 const startBase = prefersDark ? TILES.dark : TILES.light;
@@ -1186,7 +1190,7 @@ function listView() {
   const groups = new Map();
   routes.forEach(([id, r]) => { const c = r.country || 'Без страны'; if (!groups.has(c)) groups.set(c, []); groups.get(c).push([id, r]); });
   const totalKm = routes.reduce((s, [, r]) => s + routeKm(r), 0);
-  let html = `<div class="group"><h3><span>${routes.length} ${plural(routes.length, 'маршрут', 'маршрута', 'маршрутов')} · ${[...S.pois.values()].filter(poiVisible).length} объектов</span><span>${num(totalKm)} км</span></h3></div>`;
+  let html = `<div class="group"><h3><span>${routes.length} ${plural(routes.length, 'маршрут', 'маршрута', 'маршрутов')} · ${(() => { const n = [...S.pois.values()].filter(poiVisible).length; return n + ' ' + plural(n, 'объект', 'объекта', 'объектов'); })()}</span><span>${num(totalKm)} км</span></h3></div>`;
   [...groups].sort((a, b) => a[0].localeCompare(b[0], 'ru')).forEach(([c, list]) => {
     list.sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'ru'));
     html += `<div class="group"><h3><span>${esc(c)}</span><span>${list.length}</span></h3>${list.map(([id, r]) => routeItem(id, r)).join('')}</div>`;
@@ -1425,7 +1429,11 @@ function startRouteEdit(id) {
   if (Array.isArray(r.waypoints) && Array.isArray(r.segEnds) && r.segEnds.length === r.waypoints.length - 1) {
     d.wps = r.waypoints.map((p) => [...p]);
     let from = 0;
-    r.segEnds.forEach((end, i) => { d.segs.push({ coords: r.path.slice(from, end + 1).map((p) => [...p]), rail: !!(r.segRail && r.segRail[i]) }); from = end; });
+    r.segEnds.forEach((end, i) => { d.segs.push({ coords: r.path.slice(from, end + 1).map((p) => [...p]), rail: !!(r.segRail && r.segRail[i]), fixed: !(r.segRail && r.segRail[i]) && end - from > 1 }); from = end; });
+  } else if (r.path.length > 60) {
+    // Подробный трек (например, из KML) редактируется за концы, сама линия сохраняется
+    d.wps = [[...r.path[0]], [...r.path[r.path.length - 1]]];
+    d.segs = [{ coords: r.path.map((p) => [...p]), rail: false, fixed: true }];
   } else {
     d.wps = r.path.map((p) => [...p]);
     for (let i = 1; i < d.wps.length; i++) d.segs.push({ coords: [d.wps[i - 1], d.wps[i]], rail: false });
@@ -1465,6 +1473,7 @@ function afterDraftChange(d) {
 async function routeSeg(d, i) {
   const s = d.segs[i]; if (!s) return;
   const a = d.wps[i], b = d.wps[i + 1];
+  if (s.fixed && s.coords && s.coords.length > 1) { s.coords = [a, ...s.coords.slice(1, -1), b]; return; }
   s.coords = [a, b]; s.failed = false;
   if (!s.rail) { s.pending = false; return; }
   if (hav(a, b) > 250000) { s.rail = false; s.failed = true; toast('Отрезок длиннее 250 км соединён прямой. Поставьте промежуточную точку, и он пойдёт по рельсам.'); return; }
@@ -1873,6 +1882,113 @@ $('#addPoi').addEventListener('click', () => { if (!S.canWrite) return toast('Н
 $('#fitAll').addEventListener('click', fitAll);
 $('#sheetToggle').addEventListener('click', () => { $('#side').classList.toggle('collapsed'); setTimeout(() => map.invalidateSize(), 50); });
 
+// ---------- Импорт KML/KMZ (Google Мои карты, Google Earth) ----------
+const COUNTRY_RU = {
+  'Switzerland': 'Швейцария', 'Austria': 'Австрия', 'Germany': 'Германия', 'Italy': 'Италия', 'France': 'Франция', 'Liechtenstein': 'Лихтенштейн',
+  'Russia': 'Россия', 'Ukraine': 'Украина', 'Belarus': 'Беларусь', 'Poland': 'Польша', 'Czechia': 'Чехия', 'Slovakia': 'Словакия', 'Hungary': 'Венгрия',
+  'Slovenia': 'Словения', 'Croatia': 'Хорватия', 'Netherlands': 'Нидерланды', 'Belgium': 'Бельгия', 'Luxembourg': 'Люксембург', 'Denmark': 'Дания',
+  'Norway': 'Норвегия', 'Sweden': 'Швеция', 'Finland': 'Финляндия', 'United Kingdom': 'Великобритания', 'Ireland': 'Ирландия', 'Spain': 'Испания',
+  'Portugal': 'Португалия', 'Romania': 'Румыния', 'Bulgaria': 'Болгария', 'Serbia': 'Сербия', 'Bosnia and Herz.': 'Босния и Герцеговина', 'Montenegro': 'Черногория',
+  'Albania': 'Албания', 'Macedonia': 'Северная Македония', 'North Macedonia': 'Северная Македония', 'Greece': 'Греция', 'Turkey': 'Турция', 'Georgia': 'Грузия',
+  'Armenia': 'Армения', 'Azerbaijan': 'Азербайджан', 'Kazakhstan': 'Казахстан', 'Uzbekistan': 'Узбекистан', 'Kyrgyzstan': 'Киргизия', 'Tajikistan': 'Таджикистан',
+  'Turkmenistan': 'Туркменистан', 'Lithuania': 'Литва', 'Latvia': 'Латвия', 'Estonia': 'Эстония', 'Moldova': 'Молдова', 'Mongolia': 'Монголия', 'China': 'Китай',
+  'Japan': 'Япония', 'South Korea': 'Южная Корея', 'North Korea': 'КНДР', 'India': 'Индия', 'United States of America': 'США', 'Canada': 'Канада', 'Mexico': 'Мексика',
+  'Australia': 'Австралия', 'New Zealand': 'Новая Зеландия', 'Andorra': 'Андорра', 'Monaco': 'Монако', 'San Marino': 'Сан-Марино', 'Iran': 'Иран', 'Israel': 'Израиль',
+  'Egypt': 'Египет', 'Morocco': 'Марокко', 'South Africa': 'ЮАР', 'Brazil': 'Бразилия', 'Argentina': 'Аргентина', 'Chile': 'Чили', 'Peru': 'Перу', 'Vietnam': 'Вьетнам', 'Thailand': 'Таиланд',
+};
+function inRing(pt, ring) {
+  let inside = false; const x = pt[1], y = pt[0];
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if (((yi > y) !== (yj > y)) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function countryAt(pt) {
+  for (const f of countries.features) {
+    const g = f.geometry; if (!g) continue;
+    const polys = g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+    for (const poly of polys) if (inRing(pt, poly[0]) && !poly.slice(1).some((h) => inRing(pt, h))) { const n = f.properties && f.properties.name; return COUNTRY_RU[n] || n || ''; }
+  }
+  return '';
+}
+function kmlColor(c) {
+  // KML: aabbggrr
+  const m = /^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec((c || '').trim());
+  return m ? ('#' + m[4] + m[3] + m[2]).toLowerCase() : null;
+}
+function guessPoiType(name) {
+  const s = (name || '').toLowerCase();
+  if (/тоннел|туннел|tunnel|galleria|тунел/.test(s)) return 'tunnel';
+  if (/виадук|viadu|viaduct/.test(s)) return 'viaduct';
+  if (/мост|bridge|brücke|brucke|ponte|pont\b|puente|most\b/.test(s)) return 'bridge';
+  if (/депо|depot|depo\b|betriebswerk|\bbw\b/.test(s)) return 'depot';
+  if (/платформ|о\.п\.|halt|haltestelle|haltepunkt/.test(s)) return 'halt';
+  if (/вокзал|станци|station|bahnhof|\bhbf\b|\bbf\b|gare|stazione|estaci|dworzec|nádraží/.test(s)) return 'station';
+  return 'landmark';
+}
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+async function readKmlText(file) {
+  if (/\.kmz$/i.test(file.name)) {
+    if (!window.JSZip) throw new Error('Не удалось открыть KMZ. Сохраните карту как KML и загрузите ещё раз.');
+    const zip = await JSZip.loadAsync(file);
+    const entry = Object.values(zip.files).find((f) => /\.kml$/i.test(f.name));
+    if (!entry) throw new Error('В архиве KMZ нет файла KML.');
+    return entry.async('string');
+  }
+  return file.text();
+}
+async function parseKmlFile(file) {
+  const xml = new DOMParser().parseFromString(await readKmlText(file), 'application/xml');
+  if (xml.getElementsByTagName('parsererror').length) throw new Error('Файл KML повреждён или это не KML.');
+  const byTag = (el, tag) => Array.from(el.getElementsByTagNameNS('*', tag));
+  const text = (el, tag) => { const n = byTag(el, tag)[0]; return n ? n.textContent.trim() : ''; };
+  // Цвета линий из стилей (StyleMap ссылается на обычный Style)
+  const styles = {};
+  byTag(xml, 'Style').forEach((s) => { const id = s.getAttribute('id'); const ls = byTag(s, 'LineStyle')[0]; if (id && ls) styles['#' + id] = kmlColor(text(ls, 'color')); });
+  byTag(xml, 'StyleMap').forEach((sm) => {
+    const id = sm.getAttribute('id'); if (!id) return;
+    const pair = byTag(sm, 'Pair').find((p) => text(p, 'key') === 'normal');
+    if (pair) styles['#' + id] = styles[text(pair, 'styleUrl')] || null;
+  });
+  const parseCoords = (s) => s.trim().split(/\s+/).map((t) => t.split(',').map(Number)).filter((a) => isFinite(a[0]) && isFinite(a[1])).map((a) => [a[1], a[0]]);
+  const routes = [], pois = [], now = new Date().toISOString();
+  byTag(xml, 'Placemark').forEach((pm, idx) => {
+    const name = text(pm, 'name').slice(0, 120);
+    let desc = text(pm, 'description').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').slice(0, 4000);
+    const folder = pm.parentNode && pm.parentNode.localName === 'Folder' ? text(pm.parentNode, 'name') : '';
+    const lines = [...byTag(pm, 'LineString').map((l) => parseCoords(text(l, 'coordinates'))),
+      ...byTag(pm, 'Track').map((t) => byTag(t, 'coord').map((c) => c.textContent.trim().split(/\s+/).map(Number)).filter((a) => isFinite(a[0])).map((a) => [a[1], a[0]]))]
+      .filter((l) => l.length > 1);
+    if (lines.length) {
+      // Несколько кусков одной линии склеиваются в один маршрут
+      let path = [];
+      lines.forEach((l) => { if (path.length && hav(path[path.length - 1], l[l.length - 1]) < hav(path[path.length - 1], l[0])) l = l.slice().reverse(); path = path.concat(l); });
+      let tol = 3; path = simplify(path, tol);
+      while (path.length > 9000) { tol *= 2; path = simplify(path, tol); }
+      const color = styles[text(pm, 'styleUrl')] || PALETTE[routes.length % PALETTE.length];
+      const len = pathLength(path);
+      routes.push({
+        id: 'kml-' + hashStr(name + '|' + path[0].join(',') + '|' + path.length), name: name || 'Трек ' + (idx + 1),
+        country: countryAt(pointAt(path, len / 2)) || countryAt(path[0]), operator: '', status: 'active', opened: '', gauge: '', electrification: '',
+        color: safeColor(color), description: desc + (folder ? (desc ? '\n\n' : '') + 'Слой в Google Картах: ' + folder : ''), link: '',
+        path: path.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)]), lengthKm: +(len / 1000).toFixed(2), source: 'kml', createdAt: now, updatedAt: now,
+      });
+      return;
+    }
+    const pt = byTag(pm, 'Point')[0];
+    if (pt) {
+      const c = parseCoords(text(pt, 'coordinates'))[0]; if (!c) return;
+      pois.push({ id: 'kml-' + hashStr(name + '|' + c.join(',')), type: guessPoiType(name + ' ' + folder), name: name || 'Точка ' + (idx + 1), routeId: '', lat: +c[0].toFixed(6), lng: +c[1].toFixed(6), lengthM: null, heightM: null, elevationM: null, year: '', platforms: '', description: desc, link: '', source: 'kml', createdAt: now, updatedAt: now });
+    }
+  });
+  if (!routes.length && !pois.length) throw new Error('В файле не нашлось ни линий, ни точек.');
+  // Точки привязываются к ближайшему маршруту в пределах 2 км (сначала из файла, потом уже существующие)
+  const all = [...routes.map((r) => [r.id, r.path]), ...[...S.routes].map(([id, r]) => [id, r.path])];
+  pois.forEach((p) => { let best = '', bd = 2000; for (const [id, path] of all) { const c = chainage(path, [p.lat, p.lng]); if (c && c.off < bd) { bd = c.off; best = id; } } p.routeId = best; });
+  return { routes, pois };
+}
+
 // ---------- Экспорт и импорт ----------
 $('#exportBtn').addEventListener('click', async () => {
   const json = JSON.stringify(exportData(), null, 2);
@@ -1890,7 +2006,11 @@ $('#exportBtn').addEventListener('click', async () => {
 $('#importFile').addEventListener('change', async (e) => {
   const file = e.target.files[0]; e.target.value = ''; if (!file) return;
   let d;
-  try { d = JSON.parse(await file.text()); } catch (err) { toast('Это не файл JSON'); return; }
+  if (/\.km[lz]$/i.test(file.name)) {
+    try { d = await parseKmlFile(file); } catch (err) { toast(err.message || 'Не удалось прочитать KML'); return; }
+  } else {
+    try { d = JSON.parse(await file.text()); } catch (err) { toast('Это не файл JSON или KML'); return; }
+  }
   if (!d || (!Array.isArray(d.routes) && !Array.isArray(d.pois))) { toast('В файле нет маршрутов атласа'); return; }
   let n = 0;
   try {
