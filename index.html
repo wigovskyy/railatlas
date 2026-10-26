@@ -1761,7 +1761,13 @@ function restoreMain(d) {
 }
 function finishDrawing() {
   const d = S.draft;
-  if (d.wps.length < 2 || pendingSegs(d)) return;
+  if (d.wps.length < 2) return;
+  if (pendingSegs(d)) {
+    // Не ждём ответа OpenStreetMap: незаконченные отрезки соединяем прямой
+    d.segs.forEach((sg, i) => { if (sg.pending) { sg.token = null; sg.pending = false; sg.failed = true; sg.rail = false; sg.coords = [d.wps[i], d.wps[i + 1]]; } });
+    rebuildPath(d);
+    toast('Часть отрезков соединена прямой: OpenStreetMap не успел ответить. Позже их можно поправить кнопкой «Править все точки».');
+  }
   if (d.branchMode) { d.branches.push(d.path.slice()); restoreMain(d); }
   S.mode = null; document.body.classList.remove('drawing');
   $('#banner').hidden = true; S.view = { name: 'routeForm' }; refresh(); drawDraft();
@@ -1927,7 +1933,7 @@ function renderBanner() {
     b.innerHTML = `<div><strong>${d.branchMode ? 'Проведите ветку' : 'Проведите маршрут'}</strong><div class="hint">${hint}</div>${blocked ? `<div class="hint" style="color:var(--t-landmark)">${esc(RAIL_BLOCKED_MSG)}</div>` : ''}</div>
       <label class="row hint" style="gap:6px;cursor:pointer"><input type="checkbox" id="railToggle" ${d.rail ? 'checked' : ''} ${blocked ? 'disabled' : ''}> Прокладывать по рельсам (данные OpenStreetMap)</label>
       <div class="meta">${draftMeta(d)}${busy ? ' · прокладываю по рельсам…' : ''}</div>
-      <div class="row"><button class="btn primary" data-b="done" type="button" ${n < 2 || busy ? 'disabled' : ''}>Готово</button><button class="btn" data-b="undo" type="button" ${n ? '' : 'disabled'}>Убрать последнюю</button><button class="btn" data-b="cancel" type="button">Отмена</button></div>`;
+      <div class="row"><button class="btn primary" data-b="done" type="button" ${n < 2 ? 'disabled' : ''}>${busy ? 'Готово, не ждать рельсы' : 'Готово'}</button><button class="btn" data-b="undo" type="button" ${n ? '' : 'disabled'}>Убрать последнюю</button><button class="btn" data-b="cancel" type="button">Отмена</button></div>`;
     b.hidden = false;
   } else if (S.mode === 'placePoi') {
     b.innerHTML = `<div><strong>Где находится объект?</strong><div class="hint">Кликните по карте. Если рядом проходит маршрут, объект привяжется к нему автоматически.</div></div><div class="row"><button class="btn" data-b="cancel" type="button">Отмена</button></div>`;
@@ -1945,17 +1951,24 @@ $('#banner').addEventListener('change', (e) => {
 });
 
 // ---------- Данные OpenStreetMap: прокладка по рельсам и поиск объектов ----------
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+// Публичные серверы Overpass часто перегружены или молчат: пробуем по очереди, а последний ответивший ставим первым
+const OVERPASS = ['https://overpass.openstreetmap.fr/api/interpreter', 'https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+let overpassGood = null;
 const RAIL_RE = '^(rail|light_rail|narrow_gauge|preserved|subway|monorail|funicular)$';
-async function overpass(q) {
+async function overpass(q, timeoutMs = 25000) {
   if (S.railAvailable === false) throw Object.assign(new Error('blocked'), { blocked: true });
   let last, allNetwork = true;
-  for (const url of OVERPASS) {
+  for (const url of overpassGood ? [overpassGood, ...OVERPASS.filter((u) => u !== overpassGood)] : OVERPASS) {
     try {
-      const res = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      if (res.ok) return await res.json();
-      allNetwork = false; last = new Error('Сервер ответил ' + res.status);
-    } catch (e) { last = e; }
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
+        if (res.ok) { const data = await res.json(); overpassGood = url; return data; }
+        allNetwork = false; last = new Error('Сервер ответил ' + res.status);
+      } finally { clearTimeout(timer); }
+    } catch (e) {
+      if (e && e.name === 'AbortError') { allNetwork = false; last = new Error('сервер не ответил за ' + Math.round(timeoutMs / 1000) + ' с'); } else last = e;
+    }
   }
   if (allNetwork) { S.railAvailable = false; setStatusNote(); throw Object.assign(new Error('blocked'), { blocked: true }); }
   throw last;
@@ -2020,7 +2033,7 @@ function wayCost(t) {
 async function getGraph(bb) {
   const hit = graphs.find((g) => g.bb[0] <= bb[0] && g.bb[1] <= bb[1] && g.bb[2] >= bb[2] && g.bb[3] >= bb[3]);
   if (hit) return hit;
-  const data = await overpass(`[out:json][timeout:120];way["railway"~"${RAIL_RE}"](${bb.map((v) => v.toFixed(5)).join(',')});out body geom qt;`);
+  const data = await overpass(`[out:json][timeout:120];way["railway"~"${RAIL_RE}"](${bb.map((v) => v.toFixed(5)).join(',')});out body geom qt;`, 40000);
   const g = buildGraph(data.elements || []); g.bb = bb;
   graphs.push(g); if (graphs.length > 6) graphs.shift();
   return g;
@@ -2108,7 +2121,7 @@ ${union(`way["railway"~"${RAIL_RE}"]["tunnel"]["tunnel"!="no"]`)}->.tn;
 ${union(`way["railway"~"${RAIL_RE}"]["bridge"]["bridge"!="no"]`)}->.br;
 (.tn;.br;);
 out tags geom qt;`;
-    const data = await overpass(q);
+    const data = await overpass(q, 70000);
     if (S.view.name !== 'finder' || S.view.id !== routeId) return;
     S.view.items = collectObjects(r, data.elements || []);
     S.view.state = 'done';
