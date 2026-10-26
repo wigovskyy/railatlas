@@ -1,5 +1,3 @@
-<!doctype html>
-<html lang="ru"><head><title>Атлас железных дорог</title><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}[hidden]{display:none!important}</style></head><body>
 <title>Атлас железных дорог</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -829,6 +827,8 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .pm.dim { opacity: .35; }
 .vx { width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 3px solid var(--accent); }
 .vx.end { background: var(--accent); }
+.vx.vm { width: 10px; height: 10px; margin: 2px; border-width: 2px; }
+.vx.vm.mid { opacity: .45; width: 8px; height: 8px; margin: 3px; }
 
 @media (max-width: 760px) {
   .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
@@ -1388,8 +1388,9 @@ function routeForm() {
     <label>Картинка (адрес изображения)<input class="inp" id="rf-image" name="image" type="url" maxlength="1000" value="${esc(f.image)}" placeholder="https://…"></label>
     <datalist id="countryList">${[...new Set([...S.routes.values()].map((r) => r.country).filter(Boolean))].map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
     ${(d.branches || []).length || d.id ? `<div><div class="hint" style="margin-bottom:6px">Ветки маршрута</div>${(d.branches || []).map((l, i) => `<div class="row" style="justify-content:space-between;margin-bottom:4px"><span>Ветка ${i + 1} · ${num(pathLength(l) / 1000, 1)} км</span><button class="btn sm danger" type="button" data-act="delBranch" data-i="${i}">Удалить</button></div>`).join('')}<button class="btn sm" type="button" data-act="addBranch">+ Добавить ветку</button></div>` : ''}
+    ${d.vmode ? '<p class="hint" data-vmnote></p>' : ''}
     <div class="err" id="rf-err"></div>
-    <div class="actions"><button class="btn primary" type="submit">Сохранить маршрут</button><button class="btn" type="button" data-act="redraw">Изменить линию</button></div>
+    <div class="actions"><button class="btn primary" type="submit">Сохранить маршрут</button>${d.vmode ? '<button class="btn" type="button" data-act="redraw">Нарисовать основную линию заново</button>' : '<button class="btn" type="button" data-act="redraw">Изменить линию</button>' + (d.id ? '<button class="btn" type="button" data-act="vmode">Править все точки</button>' : '')}</div>
   </form>`;
 }
 function poiForm() {
@@ -1453,7 +1454,12 @@ $('#panel').addEventListener('click', async (e) => {
   else if (act === 'editPoi') startPoiEdit(S.view.id);
   else if (act === 'addPoiHere') startPlacePoi(S.view.id);
   else if (act === 'cancelForm') cancelAll();
-  else if (act === 'redraw') { syncRouteForm(); startDrawing(); }
+  else if (act === 'redraw') {
+    syncRouteForm();
+    if (S.draft.vmode) { Object.assign(S.draft, { vmode: false, wps: [], segs: [], path: [], segEnds: [] }); }
+    startDrawing();
+  }
+  else if (act === 'vmode') { syncRouteForm(); const d = S.draft; Object.assign(d, { vmode: true, wps: [], segs: [], segEnds: [] }); renderPanel(); drawDraft(); }
   else if (act === 'delBranch') { syncRouteForm(); S.draft.branches.splice(+a.dataset.i, 1); renderPanel(); drawDraft(); }
   else if (act === 'addBranch') { syncRouteForm(); startBranch(); }
   else if (act === 'findObjects') findObjects(S.view.id);
@@ -1488,7 +1494,7 @@ async function saveRoute(form) {
     color: safeColor(f.color), description: f.description.slice(0, 4000), link: safeUrl(f.link),
     game: (f.game || '').slice(0, 60), image: safeUrl(f.image),
     path: d.path.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)]), branches: (d.branches || []).map((l) => l.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)])), lengthKm: +((pathLength(d.path) + (d.branches || []).reduce((s, l) => s + pathLength(l), 0)) / 1000).toFixed(2),
-    waypoints: d.wps.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)]), segEnds: d.segEnds.slice(), segRail: d.segs.map((s) => !!(s.rail && !s.failed)),
+    waypoints: d.vmode ? [] : d.wps.map(([a, b]) => [+a.toFixed(6), +b.toFixed(6)]), segEnds: d.vmode ? [] : d.segEnds.slice(), segRail: d.vmode ? [] : d.segs.map((s) => !!(s.rail && !s.failed)),
     updatedAt: new Date().toISOString(),
   };
   if (!prev.createdAt) data.createdAt = data.updatedAt;
@@ -1496,7 +1502,7 @@ async function saveRoute(form) {
   const id = d.id || newId();
   try {
     await store.put('routes', id, data);
-    const isNewRail = !d.id && d.segs.some((s) => s.rail && !s.failed);
+    const isNewRail = !d.id && !d.vmode && d.segs.some((s) => s.rail && !s.failed);
     S.draft = null; draftLayer.clearLayers(); S.view = { name: 'route', id }; refresh(); toast('Маршрут сохранён');
     if (isNewRail) findObjects(id);
   } catch (err) { $('#rf-err').textContent = writeError(err); }
@@ -1535,19 +1541,16 @@ function startNewRoute() {
 function startRouteEdit(id) {
   const r = S.routes.get(id); if (!r) return;
   const d = { id, wps: [], segs: [], path: [], segEnds: [], branches: (Array.isArray(r.branches) ? r.branches : []).map((l) => l.map((p) => [...p])), rail: S.railAvailable !== false, form: { ...emptyRouteForm(), ...r } };
-  if (Array.isArray(r.waypoints) && Array.isArray(r.segEnds) && r.segEnds.length === r.waypoints.length - 1) {
+  const hasWps = Array.isArray(r.waypoints) && r.waypoints.length > 1 && Array.isArray(r.segEnds) && r.segEnds.length === r.waypoints.length - 1;
+  if (hasWps && !d.branches.length) {
     d.wps = r.waypoints.map((p) => [...p]);
     let from = 0;
     r.segEnds.forEach((end, i) => { d.segs.push({ coords: r.path.slice(from, end + 1).map((p) => [...p]), rail: !!(r.segRail && r.segRail[i]), fixed: !(r.segRail && r.segRail[i]) && end - from > 1 }); from = end; });
-  } else if (r.path.length > 60) {
-    // Подробный трек (например, из KML) редактируется за концы, сама линия сохраняется
-    d.wps = [[...r.path[0]], [...r.path[r.path.length - 1]]];
-    d.segs = [{ coords: r.path.map((p) => [...p]), rail: false, fixed: true }];
+    rebuildPath(d);
   } else {
-    d.wps = r.path.map((p) => [...p]);
-    for (let i = 1; i < d.wps.length; i++) d.segs.push({ coords: [d.wps[i - 1], d.wps[i]], rail: false });
+    // Составные и подробные линии (например, из KML): правится каждая точка каждой линии
+    d.vmode = true; d.path = r.path.map((p) => [...p]);
   }
-  rebuildPath(d);
   S.draft = d; S.view = { name: 'routeForm' }; refresh(); drawDraft();
 }
 function startDrawing() {
@@ -1557,8 +1560,8 @@ function startDrawing() {
 const pendingSegs = (d) => d.segs.some((s) => s.pending);
 function startBranch() {
   const d = S.draft;
-  d.main = { wps: d.wps, segs: d.segs, path: d.path, segEnds: d.segEnds };
-  d.wps = []; d.segs = []; d.path = []; d.segEnds = []; d.branchMode = true;
+  d.main = { wps: d.wps, segs: d.segs, path: d.path, segEnds: d.segEnds, vmode: d.vmode };
+  d.wps = []; d.segs = []; d.path = []; d.segEnds = []; d.branchMode = true; d.vmode = false;
   startDrawing();
 }
 function restoreMain(d) {
@@ -1573,6 +1576,7 @@ function finishDrawing() {
   $('#banner').hidden = true; S.view = { name: 'routeForm' }; refresh(); drawDraft();
 }
 function rebuildPath(d) {
+  if (d.vmode) return;
   d.segEnds = [];
   if (d.wps.length < 2) { d.path = d.wps.map((p) => [...p]); return; }
   const out = [];
@@ -1664,6 +1668,7 @@ function drawDraft() {
     else if ((!s.rail || s.failed) && !s.fixed) draftLayer.addLayer(L.polyline(s.coords || [d.wps[i], d.wps[i + 1]], { color: css('--surface'), weight: 2, dashArray: '6 8', interactive: false }));
   });
   if (S.mode !== 'draw' && S.view.name !== 'routeForm') return;
+  if (d.vmode) { drawVertexHandles(d); return; }
   d.wps.forEach((p, i) => {
     const end = i === 0 || i === d.wps.length - 1;
     const m = L.marker(p, { draggable: true, icon: L.divIcon({ html: `<span class="vx${end ? ' end' : ''}"></span>`, className: '', iconSize: [14, 14], iconAnchor: [7, 7] }), title: 'Перетащите точку; двойной клик удаляет её', zIndexOffset: 1000 });
@@ -1673,11 +1678,50 @@ function drawDraft() {
     draftLayer.addLayer(m);
   });
 }
+// Режим правки точек: у каждой линии (основной и веток) видны все вершины в пределах экрана
+const VM_MAX = 400, VM_MID_MAX = 150;
+function drawVertexHandles(d) {
+  const b = map.getBounds().pad(0.1), lines = [d.path, ...(d.branches || [])];
+  const vis = [];
+  lines.forEach((l, li) => l.forEach((p, i) => { if (b.contains(p)) vis.push([li, i]); }));
+  d.vmHidden = vis.length > VM_MAX; setVmNote(d);
+  if (d.vmHidden) return;
+  const withMid = vis.length <= VM_MID_MAX;
+  const icon = (cls) => L.divIcon({ html: `<span class="vx vm${cls}"></span>`, className: '', iconSize: [14, 14], iconAnchor: [7, 7] });
+  vis.forEach(([li, i]) => {
+    const l = lines[li], end = i === 0 || i === l.length - 1;
+    const m = L.marker(l[i], { draggable: true, icon: icon(end ? ' end' : ''), title: 'Перетащите точку; двойной клик удаляет её', zIndexOffset: 1000 });
+    m.on('dragend', (e) => { const ll = e.target.getLatLng(); l[i] = [ll.lat, ll.lng]; afterVmChange(d); });
+    m.on('dblclick', (e) => { L.DomEvent.stop(e); if (l.length > 2) { l.splice(i, 1); afterVmChange(d); } });
+    m.on('click', (e) => { L.DomEvent.stop(e); });
+    draftLayer.addLayer(m);
+    if (withMid && i < l.length - 1) {
+      const mid = [(l[i][0] + l[i + 1][0]) / 2, (l[i][1] + l[i + 1][1]) / 2];
+      const mm = L.marker(mid, { draggable: true, icon: icon(' mid'), title: 'Потяните, чтобы добавить точку', zIndexOffset: 900 });
+      mm.on('dragend', (e) => { const ll = e.target.getLatLng(); l.splice(i + 1, 0, [ll.lat, ll.lng]); afterVmChange(d); });
+      mm.on('click', (e) => { L.DomEvent.stop(e); });
+      draftLayer.addLayer(mm);
+    }
+  });
+}
+function setVmNote(d) {
+  const el = document.querySelector('#panel [data-vmnote]');
+  if (el) el.textContent = d.vmHidden ? 'Приблизьте карту, чтобы увидеть точки линии.' : 'Тяните точки, двойной клик удаляет. Бледные точки между вершинами добавляют новую.';
+}
+function afterVmChange(d) {
+  if (S.draft !== d) return;
+  drawDraft(); updateFormMeta();
+}
+map.on('moveend', () => { if (S.draft && S.draft.vmode && S.view.name === 'routeForm' && !S.mode) drawDraft(); });
 function updateFormMeta() {
   const el = document.querySelector('#panel .coords[data-meta]');
   if (el && S.draft) el.textContent = draftMeta(S.draft);
 }
 function draftMeta(d) {
+  if (d.vmode) {
+    const lines = [d.path, ...(d.branches || [])], n = lines.reduce((s, l) => s + l.length, 0), km = lines.reduce((s, l) => s + pathLength(l), 0) / 1000;
+    return `${n} ${plural(n, 'точка', 'точки', 'точек')} · ${lines.length} ${plural(lines.length, 'линия', 'линии', 'линий')} · ${num(km, 1)} км`;
+  }
   const n = d.wps.length, railKm = d.segs.reduce((s, sg) => s + (sg.rail && !sg.failed && sg.coords ? pathLength(sg.coords) : 0), 0) / 1000;
   const bk = (d.branches || []).reduce((s, l) => s + pathLength(l), 0) / 1000;
   return `${n} ${plural(n, 'опорная точка', 'опорные точки', 'опорных точек')} · ${num(pathLength(d.path) / 1000 + bk, 1)} км${railKm ? ` · по рельсам ${num(railKm, 1)} км` : ''}${bk ? ` · веток ${d.branches.length}` : ''}`;
@@ -2183,5 +2227,3 @@ refresh();
 store.init();
 })();
 </script>
-
-</body></html>
