@@ -36,13 +36,28 @@ export default {
       if (!state || state !== url.searchParams.get('state')) return text('Вход не удался: устаревшая ссылка. Вернитесь на карту и нажмите «Войти» ещё раз.', 400);
       let back;
       try { back = safeReturn(atob(backB64), site); } catch (e) { back = site.toString(); }
-      const res = await fetch('https://github.com/login/oauth/access_token', {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'railatlas-auth' },
-        body: JSON.stringify({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code: url.searchParams.get('code'), redirect_uri: `${url.origin}/callback` }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!data.access_token) return text('GitHub не выдал токен: ' + (data.error_description || data.error || res.status), 400);
+      const code = url.searchParams.get('code');
+      const body = JSON.stringify({ client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET, code, redirect_uri: `${url.origin}/callback` });
+      const retry = `Вернитесь на карту (${site}) и нажмите «Войти» ещё раз.`;
+      // GitHub иногда отвечает 502/503/504: это временный сбой, поэтому запрос повторяется
+      let data = {}, status = 0;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt) await new Promise((r) => setTimeout(r, 500 * attempt));
+        try {
+          const res = await fetch('https://github.com/login/oauth/access_token', {
+            method: 'POST',
+            headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'railatlas-auth' },
+            body,
+          });
+          status = res.status;
+          data = await res.json().catch(() => ({}));
+        } catch (e) { status = 0; data = {}; }
+        if (data.access_token || (status && status < 500)) break;
+      }
+      if (!data.access_token) {
+        if (!status || status >= 500) return text(`GitHub сейчас не отвечает (ошибка ${status || 'сети'}). Это временный сбой на стороне GitHub. ${retry}`, 502);
+        return text('GitHub не выдал токен: ' + (data.error_description || data.error || status) + '. ' + retry, 400);
+      }
       // Токен передаём в части адреса после #: она не уходит на сервер GitHub Pages и не попадает в логи
       return new Response(null, {
         status: 302,
