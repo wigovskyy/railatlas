@@ -2105,25 +2105,61 @@ function railRoute(g, a, b, maxTurn) {
   return { coords };
 }
 
+// Режет линию на куски не длиннее maxM метров и maxPts точек; соседние куски делят общую точку
+function splitPath(pts, maxM, maxPts) {
+  const dense = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], n = Math.ceil(hav(a, pts[i]) / (maxM / 2));
+    for (let k = 1; k < n; k++) dense.push([a[0] + (pts[i][0] - a[0]) * k / n, a[1] + (pts[i][1] - a[1]) * k / n]);
+    dense.push(pts[i]);
+  }
+  pts = dense;
+  const out = []; let cur = [pts[0]], len = 0;
+  for (let i = 1; i < pts.length; i++) {
+    cur.push(pts[i]); len += hav(pts[i - 1], pts[i]);
+    if ((len >= maxM || cur.length >= maxPts) && i < pts.length - 1) { out.push(cur); cur = [pts[i]]; len = 0; }
+  }
+  if (cur.length > 1) out.push(cur);
+  return out;
+}
 // Поиск станций, туннелей и мостов вдоль готового маршрута
 async function findObjects(routeId) {
   const r = S.routes.get(routeId); if (!r) return;
   S.view = { name: 'finder', id: routeId, state: 'loading', items: [] }; renderPanel();
   try {
+    // Один запрос на весь длинный маршрут не успевает выполниться, поэтому линия режется на куски
     const lines = allLines(r);
     let tol = 60, parts = lines.map((l) => simplify(l, tol));
-    while (parts.reduce((s, l) => s + l.length, 0) > 600) { tol *= 2; parts = lines.map((l) => simplify(l, tol)); }
+    while (parts.reduce((s, l) => s + l.length, 0) > 2000) { tol *= 2; parts = lines.map((l) => simplify(l, tol)); }
     const rad = Math.min(400, 60 + tol);
-    const arounds = parts.map((pts) => `(around:${rad},${pts.map((p) => p[0].toFixed(5) + ',' + p[1].toFixed(5)).join(',')})`);
-    const union = (sel) => '(' + arounds.map((a) => `${sel}${a};`).join('') + ')';
-    const q = `[out:json][timeout:180];
-${union('node["railway"~"^(station|halt)$"]')}->.st;
+    const chunks = parts.flatMap((pts) => splitPath(pts, 15000, 50));
+    const query = (pts) => {
+      const around = `(around:${rad},${pts.map((p) => p[0].toFixed(5) + ',' + p[1].toFixed(5)).join(',')})`;
+      return `[out:json][timeout:60];
+node["railway"~"^(station|halt)$"]${around}->.st;
 .st out body qt;
-${union(`way["railway"~"${RAIL_RE}"]["tunnel"]["tunnel"!="no"]`)}->.tn;
-${union(`way["railway"~"${RAIL_RE}"]["bridge"]["bridge"!="no"]`)}->.br;
-(.tn;.br;);
+(way["railway"~"${RAIL_RE}"]["tunnel"]["tunnel"!="no"]${around};way["railway"~"${RAIL_RE}"]["bridge"]["bridge"!="no"]${around};);
 out tags geom qt;`;
-    const data = await overpass(q, 70000);
+    };
+    const els = new Map(), results = new Array(chunks.length);
+    const view = S.view; view.progress = { done: 0, total: chunks.length };
+    const todo = chunks.map((_, i) => i);
+    for (let pass = 0; pass < 2 && todo.length; pass++) {
+      let lastErr;
+      const queue = todo.splice(0);
+      const worker = async () => {
+        while (queue.length) {
+          const i = queue.shift();
+          if (S.view.name !== 'finder' || S.view.id !== routeId) return;
+          try { results[i] = (await overpass(query(chunks[i]), 45000)).elements || []; view.progress.done++; if (S.view.name === 'finder') renderPanel(); }
+          catch (e) { if (e.blocked) throw e; lastErr = e; todo.push(i); }
+        }
+      };
+      await Promise.all([worker(), worker()]);
+      if (pass === 1 && todo.length) throw lastErr;
+    }
+    for (const list of results) for (const el of list || []) els.set(el.type + el.id, el);
+    const data = { elements: [...els.values()] };
     if (S.view.name !== 'finder' || S.view.id !== routeId) return;
     S.view.items = collectObjects(r, data.elements || []);
     S.view.state = 'done';
@@ -2181,7 +2217,7 @@ function collectObjects(r, els) {
 function finderView() {
   const v = S.view, r = S.routes.get(v.id);
   const head = `${back(r ? { name: 'route', id: v.id, label: r.name } : null)}<div class="kicker">Данные OpenStreetMap</div><h2 class="title">Объекты на маршруте</h2>`;
-  if (v.state === 'loading') return head + `<p class="hint">Ищу станции, туннели и мосты вдоль линии… Для длинного маршрута это может занять до минуты.</p>`;
+  if (v.state === 'loading') return head + `<p class="hint">Ищу станции, туннели и мосты вдоль линии… ${v.progress && v.progress.total > 1 ? `Обработано участков: ${v.progress.done} из ${v.progress.total}.` : 'Для длинного маршрута это может занять несколько минут.'}</p>`;
   if (v.state === 'error') return head + `<p class="err">${esc(v.msg)}</p><div class="actions"><button class="btn" data-act="findObjects" type="button">Повторить</button></div>`;
   if (!v.items.length) return head + `<p class="hint">Вдоль линии ничего не нашлось. Возможно, маршрут проведён не по рельсам или в OpenStreetMap этот участок ещё не размечен.</p>`;
   const n = v.items.filter((o) => o.checked).length;
