@@ -2200,7 +2200,7 @@ function collectObjects(r, els, routeId) {
   const fill = (o, hit) => { o.exists = !!hit; o.attach = !!hit && !onRoute(hit.p, routeId); o.existId = hit ? hit.id : null; };
   const out = [], seenSt = new Set();
   for (const el of els) {
-    if (el.type !== 'node') continue;
+    if (el.type !== 'node' || el.lat == null || el.lon == null) continue;
     const t = el.tags || {};
     if (t.station === 'subway' || t.station === 'light_rail' || t.station === 'funicular') continue;
     const c = routeChainage(r, [el.lat, el.lon]); if (!c || c.off > 350) continue;
@@ -2213,8 +2213,10 @@ function collectObjects(r, els, routeId) {
   // Туннели и мосты: соседние куски одного сооружения (и параллельные пути) объединяются
   const pieces = [];
   for (const el of els) {
-    if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
-    const t = el.tags || {}, g = el.geometry.map((p) => [p.lat, p.lon]);
+    if (el.type !== 'way' || !Array.isArray(el.geometry)) continue;
+    // Overpass отдаёт null вместо координат узлов, которых нет в выборке
+    const t = el.tags || {}, g = el.geometry.filter((p) => p && p.lat != null && p.lon != null).map((p) => [p.lat, p.lon]);
+    if (g.length < 2) continue;
     const isT = t.tunnel && t.tunnel !== 'no';
     if (!isT && !(t.bridge && t.bridge !== 'no')) continue;
     const type = isT ? 'tunnel' : t.bridge === 'viaduct' ? 'viaduct' : 'bridge';
