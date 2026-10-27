@@ -1331,11 +1331,21 @@ const allLines = (r) => [r.path || [], ...(Array.isArray(r.branches) ? r.branche
 // Ближайшая точка на любой линии маршрута (основной или ветке)
 function routeChainage(r, pt) { let best = null; allLines(r).forEach((l, i) => { const c = chainage(l, pt); if (c && (!best || c.off < best.off)) best = { ...c, line: i }; }); return best; }
 function routeVisible(r) { return (S.country === 'all' || (r.country || 'Без страны') === S.country) && (S.game === 'all' || (r.game || 'Без симулятора') === S.game); }
-function poiCountry(p) { const r = S.routes.get(p.routeId); return r ? (r.country || 'Без страны') : (p.country || 'Без страны'); }
-function poiVisible(p) { const r = S.routes.get(p.routeId); return S.types.has(p.type) && (S.country === 'all' || poiCountry(p) === S.country) && (S.game === 'all' || (r ? (r.game || 'Без симулятора') === S.game : false)); }
+// Объект может лежать на нескольких маршрутах сразу (например, один и тот же путь в разных играх):
+// routeId — основной маршрут, routeIds — все маршруты. На карте объект рисуется один раз.
+function poiRoutes(p) { return Array.isArray(p.routeIds) && p.routeIds.length ? p.routeIds : (p.routeId ? [p.routeId] : []); }
+function onRoute(p, id) { return poiRoutes(p).includes(id); }
+function poiMainId(p) { return poiRoutes(p).find((id) => S.routes.has(id)) || p.routeId || ''; }
+function poiCountry(p) { const r = S.routes.get(poiMainId(p)); return r ? (r.country || 'Без страны') : (p.country || 'Без страны'); }
+function poiVisible(p) {
+  const rs = poiRoutes(p).map((id) => S.routes.get(id)).filter(Boolean);
+  return S.types.has(p.type)
+    && (S.country === 'all' || (rs.length ? rs.some((r) => (r.country || 'Без страны') === S.country) : poiCountry(p) === S.country))
+    && (S.game === 'all' || rs.some((r) => (r.game || 'Без симулятора') === S.game));
+}
 function selectedRouteId() {
   if (S.view.name === 'route') return S.view.id;
-  if (S.view.name === 'poi') { const p = S.pois.get(S.view.id); return p && p.routeId; }
+  if (S.view.name === 'poi') { const p = S.pois.get(S.view.id); return p && poiMainId(p); }
   return null;
 }
 
@@ -1377,9 +1387,9 @@ function drawPois() {
     if (S.poiDraft && S.poiDraft.id === id) continue;
     const size = p.type === 'station' ? 15 : 22;
     let cls = '';
-    if (selPoi === id) cls = ' sel'; else if (sel && p.routeId !== sel) cls = ' dim';
+    if (selPoi === id) cls = ' sel'; else if (sel && !onRoute(p, sel)) cls = ' dim';
     // С какого масштаба показывать точку; у открытого маршрута порог ниже на 2
-    const minZ = Math.max(3, (POI_MIN_ZOOM[p.type] ?? 10) - (sel && p.routeId === sel ? 2 : 0));
+    const minZ = Math.max(3, (POI_MIN_ZOOM[p.type] ?? 10) - (sel && onRoute(p, sel) ? 2 : 0));
     const pz = 'pz pz' + minZ + (selPoi === id ? ' pz-sel' : '');
     const html = iconHtml(p.type, size).replace('class="pm', 'class="pm' + cls);
     const m = L.marker([p.lat, p.lng], { icon: L.divIcon({ html, className: pz, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }), riseOnHover: true, keyboard: true, title: p.name, zIndexOffset: p.type === 'station' ? 0 : 200 });
@@ -1435,7 +1445,7 @@ function openView(v) {
 function routeKm(r) { return r.lengthKm || pathLength(r.path || []) / 1000; }
 function poisOfRoute(id) {
   const r = S.routes.get(id);
-  return [...S.pois].filter(([, p]) => p.routeId === id).map(([pid, p]) => {
+  return [...S.pois].filter(([, p]) => onRoute(p, id)).map(([pid, p]) => {
     const c = r && routeChainage(r, [p.lat, p.lng]);
     return { id: pid, p, km: c ? c.along / 1000 : null, line: c ? c.line : 0 };
   }).sort((a, b) => a.line - b.line || (a.km ?? 0) - (b.km ?? 0));
@@ -1474,18 +1484,18 @@ function listView() {
     list.sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'ru'));
     html += `<div class="group"><h3><span>${esc(c === 'Без симулятора' ? 'Без игры' : c)}</span><span>${list.length}</span></h3>${list.map(([id, r]) => routeItem(id, r)).join('')}</div>`;
   });
-  const orphans = [...S.pois].filter(([, p]) => !S.routes.has(p.routeId) && poiVisible(p));
+  const orphans = [...S.pois].filter(([, p]) => !poiRoutes(p).some((id) => S.routes.has(id)) && poiVisible(p));
   if (orphans.length) html += `<div class="group"><h3><span>Объекты вне маршрутов</span><span>${orphans.length}</span></h3>${orphans.map(([id, p]) => poiItem(id, p)).join('')}</div>`;
   return html;
 }
 function plural(n, a, b, c) { const m10 = n % 10, m100 = n % 100; return m10 === 1 && m100 !== 11 ? a : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? b : c; }
 function routeItem(id, r) {
-  const n = [...S.pois.values()].filter((p) => p.routeId === id).length;
+  const n = [...S.pois.values()].filter((p) => onRoute(p, id)).length;
   const ex = r.example ? ' · <span class="tag">пример</span>' : '';
   return `<button class="item" type="button" data-open="route" data-id="${esc(id)}"><span class="sw" style="background:${safeColor(r.color)}"></span><span class="nm">${esc(r.name || 'Без названия')}<span class="sub">${esc(r.country || r.operator || STATUS[r.status] || '')}${n ? ` · ${n} ${plural(n, 'объект', 'объекта', 'объектов')}` : ''}${ex}</span></span><span class="km">${num(routeKm(r))} км</span></button>`;
 }
 function poiItem(id, p, km, line) {
-  const r = S.routes.get(p.routeId);
+  const r = S.routes.get(poiMainId(p));
   return `<button class="item" type="button" data-open="poi" data-id="${esc(id)}">${smallIco(p.type)}<span class="nm">${esc(p.name || 'Без названия')}<span class="sub">${esc(TYPES[p.type]?.label || '')}${line ? ' · ветка ' + line : ''}${r && km == null ? ' · ' + esc(r.name) : ''}</span></span><span class="km">${km != null ? 'км ' + num(km, 1) : ''}</span></button>`;
 }
 
@@ -1520,17 +1530,18 @@ function routeView(id) {
     ${S.canWrite ? `<div class="actions"><button class="btn" data-act="findObjects" type="button">Найти станции, туннели и мосты</button>${list.length ? '<button class="btn" data-act="wikiRoute" type="button">Описания и фото для всех объектов</button>' : ''}<button class="btn" data-act="addPoiHere" type="button">+ Объект вручную</button><button class="btn" data-act="editRoute" type="button">Изменить</button>${delBtn('route')}</div>${list.length ? `<div class="actions" style="margin-top:8px">${S.confirmPoints ? `<span class="row" style="width:100%"><span class="err">Удалить все точки маршрута (${list.length})? Сама линия останется.</span><button class="btn primary sm" data-act="delPoints" type="button">Да, удалить</button><button class="btn sm" data-act="cancelDelPoints" type="button">Нет</button></span>` : `<button class="btn danger" data-act="askDelPoints" type="button">Удалить все точки</button>`}</div>` : ''}` : ''}`;
 }
 function poiView(id) {
-  const p = S.pois.get(id), r = S.routes.get(p.routeId);
+  const p = S.pois.get(id), r = S.routes.get(poiMainId(p));
+  const others = poiRoutes(p).map((x) => S.routes.get(x)).filter(Boolean);
   const c = r ? routeChainage(r, [p.lat, p.lng]) : null;
   const facts = [];
-  if (r) facts.push(['Маршрут', r.name, true]);
+  if (r) facts.push([others.length > 1 ? 'Маршруты' : 'Маршрут', others.map((x) => x.name).join(', '), true]);
   if (c) facts.push(['Километраж', 'км ' + num(c.along / 1000, 1)]);
   if (p.lengthM) facts.push(['Длина', num(p.lengthM) + ' м']);
   if (p.heightM) facts.push([p.type === 'tunnel' ? 'Глубина' : 'Высота', num(p.heightM) + ' м']);
   if (p.elevationM) facts.push(['Высота над уровнем моря', num(p.elevationM) + ' м']);
   if (p.year) facts.push([p.type === 'station' || p.type === 'halt' ? 'Открыта' : 'Построен', p.year]);
   if (p.platforms) facts.push(['Платформы', p.platforms]);
-  return `${back(r ? { name: 'route', id: p.routeId, label: r.name } : null)}
+  return `${back(r ? { name: 'route', id: poiMainId(p), label: r.name } : null)}
     <div class="kicker">${smallIco(p.type)}${esc(TYPES[p.type]?.label || 'Объект')}${p.example ? ' <span class="tag">пример</span>' : ''}</div>
     <h2 class="title">${esc(p.name)}</h2>
     ${r ? `<div class="rule" style="background:${safeColor(r.color)}"></div>` : ''}
@@ -1629,10 +1640,17 @@ $('#panel').addEventListener('click', async (e) => {
   else if (act === 'askDelPoints') { S.confirmPoints = true; renderPanel(); }
   else if (act === 'cancelDelPoints') { S.confirmPoints = false; renderPanel(); }
   else if (act === 'delPoints') {
-    const rid = S.view.id, ids = [...S.pois].filter(([, p]) => p.routeId === rid).map(([pid]) => pid);
+    const rid = S.view.id, ids = [...S.pois].filter(([, p]) => onRoute(p, rid)).map(([pid]) => pid);
     a.disabled = true; a.textContent = 'Удаляю…';
     let n = 0;
-    try { for (const pid of ids) { await store.remove('pois', pid); n++; } toast(`Удалено точек: ${n}`); }
+    try {
+      for (const pid of ids) {
+        const p = S.pois.get(pid), rest = poiRoutes(p).filter((x) => x !== rid);
+        // Объект, который лежит и на другом маршруте, остаётся: с него снимается только этот маршрут
+        if (rest.length) { const q = { ...p, routeId: rest[0], updatedAt: new Date().toISOString() }; if (rest.length > 1) q.routeIds = rest; else delete q.routeIds; await store.put('pois', pid, q); }
+        else await store.remove('pois', pid);
+        n++;
+      } toast(`Удалено точек: ${n}`); }
     catch (err) { toast(writeError(err)); }
     S.confirmPoints = false; refresh();
   }
@@ -1715,6 +1733,7 @@ async function savePoi(form) {
   };
   if (!prev.createdAt) data.createdAt = data.updatedAt;
   delete data.example;
+  if (!(Array.isArray(prev.routeIds) && prev.routeIds.includes(data.routeId))) delete data.routeIds;
   const id = d.id || newId();
   try {
     await store.put('pois', id, data);
@@ -2161,16 +2180,24 @@ out tags geom qt;`;
     for (const list of results) for (const el of list || []) els.set(el.type + el.id, el);
     const data = { elements: [...els.values()] };
     if (S.view.name !== 'finder' || S.view.id !== routeId) return;
-    S.view.items = collectObjects(r, data.elements || []);
+    S.view.items = collectObjects(r, data.elements || [], routeId);
     S.view.state = 'done';
   } catch (e) {
     S.view.state = 'error'; S.view.msg = e.blocked ? RAIL_BLOCKED_MSG : 'Сервер OpenStreetMap не ответил (' + (e.message || 'ошибка сети') + '). Попробуйте ещё раз через минуту.';
   }
   if (S.view.name === 'finder') renderPanel();
 }
-function collectObjects(r, els) {
-  const nm = (t, alt) => t['name:en'] || t.int_name || t[alt] || t.name || '';
-  const near = (lat, lng, types, m) => [...S.pois.values()].some((p) => types.includes(p.type) && hav([p.lat, p.lng], [lat, lng]) < m);
+function collectObjects(r, els, routeId) {
+  const nm = (t) => t['name:en'] || t.int_name || t.name || '';
+  // У моста или туннеля в поле name стоит название железнодорожной линии, поэтому берём только собственное название
+  const nmw = (t, isT) => { const k = isT ? 'tunnel:name' : 'bridge:name'; return t[k + ':en'] || t[k] || ''; };
+  // Ближайший уже добавленный объект того же типа; если он лежит на другом маршруте, его можно привязать и к этому
+  const near = (lat, lng, types, m) => {
+    let best = null, bd = m;
+    for (const [pid, p] of S.pois) { if (!types.includes(p.type)) continue; const d = hav([p.lat, p.lng], [lat, lng]); if (d < bd) { bd = d; best = { id: pid, p }; } }
+    return best;
+  };
+  const fill = (o, hit) => { o.exists = !!hit; o.attach = !!hit && !onRoute(hit.p, routeId); o.existId = hit ? hit.id : null; };
   const out = [], seenSt = new Set();
   for (const el of els) {
     if (el.type !== 'node') continue;
@@ -2180,7 +2207,8 @@ function collectObjects(r, els) {
     const type = t.railway === 'halt' ? 'halt' : 'station', name = nm(t);
     const key = (name || el.id) + '';
     if (seenSt.has(key)) continue; seenSt.add(key);
-    out.push({ type, name: name || 'Станция без названия', lat: el.lat, lng: el.lon, km: c.along / 1000, line: c.line, link: 'https://www.openstreetmap.org/node/' + el.id, exists: near(el.lat, el.lon, ['station', 'halt'], 200), extra: t.ele ? { elevationM: numOrNull(t.ele) } : {} });
+    out.push({ type, name: name || 'Станция без названия', lat: el.lat, lng: el.lon, km: c.along / 1000, line: c.line, link: 'https://www.openstreetmap.org/node/' + el.id, extra: t.ele ? { elevationM: numOrNull(t.ele) } : {} });
+    fill(out[out.length - 1], near(el.lat, el.lon, ['station', 'halt'], 200));
   }
   // Туннели и мосты: соседние куски одного сооружения (и параллельные пути) объединяются
   const pieces = [];
@@ -2194,7 +2222,7 @@ function collectObjects(r, els) {
     const cm = routeChainage(r, mid); if (!cm || cm.off > 30) continue;
     const ln = allLines(r)[cm.line];
     const c0 = chainage(ln, g[0]).along, c1 = chainage(ln, g[g.length - 1]).along;
-    pieces.push({ line: cm.line, type, s: Math.min(c0, c1), e: Math.max(c0, c1), len: pathLength(g), name: nm(t, isT ? 'tunnel:name' : 'bridge:name'), id: el.id, t });
+    pieces.push({ line: cm.line, type, s: Math.min(c0, c1), e: Math.max(c0, c1), len: pathLength(g), name: nmw(t, isT), id: el.id, t });
   }
   pieces.sort((a, b) => a.line - b.line || a.s - b.s);
   const groups = [];
@@ -2208,10 +2236,11 @@ function collectObjects(r, els) {
     const len = Math.max(g.e - g.s, g.maxLen);
     if (len < (g.type === 'tunnel' ? 20 : 25)) continue;
     const at = pointAt(allLines(r)[g.line], (g.s + g.e) / 2);
-    out.push({ type: g.type, name: g.name, lat: at[0], lng: at[1], km: (g.s + g.e) / 2000, line: g.line, link: 'https://www.openstreetmap.org/way/' + g.id, exists: near(at[0], at[1], [g.type], 120), extra: { lengthM: Math.round(len) } });
+    out.push({ type: g.type, name: g.name, lat: at[0], lng: at[1], km: (g.s + g.e) / 2000, line: g.line, link: 'https://www.openstreetmap.org/way/' + g.id, extra: { lengthM: Math.round(len) } });
+    fill(out[out.length - 1], near(at[0], at[1], g.type === 'tunnel' ? ['tunnel'] : ['bridge', 'viaduct'], 120));
   }
   out.sort((a, b) => a.line - b.line || a.km - b.km);
-  out.forEach((o) => { o.checked = !o.exists; });
+  out.forEach((o) => { o.checked = !o.exists || o.attach; });
   return out;
 }
 function finderView() {
@@ -2222,9 +2251,9 @@ function finderView() {
   if (!v.items.length) return head + `<p class="hint">Вдоль линии ничего не нашлось. Возможно, маршрут проведён не по рельсам или в OpenStreetMap этот участок ещё не размечен.</p>`;
   const n = v.items.filter((o) => o.checked).length;
   const counts = {}; v.items.forEach((o) => { counts[o.type] = (counts[o.type] || 0) + 1; });
-  return head + `<p class="hint">Найдено: ${Object.entries(counts).map(([k, c]) => `${TYPES[k].plural.toLowerCase()} ${c}`).join(', ')}. Уже отмеченные на карте сняты с выбора.</p>
+  return head + `<p class="hint">Найдено: ${Object.entries(counts).map(([k, c]) => `${TYPES[k].plural.toLowerCase()} ${c}`).join(', ')}. Уже отмеченные на карте сняты с выбора; объекты с другого маршрута по тому же пути выбраны: они только привяжутся к этому маршруту и не задвоятся.</p>
     <div class="row" style="margin:8px 0"><button class="btn sm" data-act="finderAll" type="button">Выбрать все</button><button class="btn sm" data-act="finderNone" type="button">Снять все</button></div>
-    <ul class="timeline" style="--rc:${safeColor(r && r.color)}">${v.items.map((o, i) => `<li><label class="item"><input type="checkbox" data-fi="${i}" ${o.checked ? 'checked' : ''} style="margin:0 0 0 1px;accent-color:${safeColor(r && r.color)}"><span class="nm">${esc(o.name)}<span class="sub">${smallIco(o.type).replace('class="ico"', 'class="ico" style="display:inline-grid;vertical-align:-4px;margin-right:4px;' + (o.type === 'station' || o.type === 'halt' ? '' : 'background:' + TYPES[o.type].color) + '"')}${esc(TYPES[o.type].label)}${o.line ? ' · ветка ' + o.line : ''}${o.extra.lengthM ? ' · ' + num(o.extra.lengthM) + ' м' : ''}${o.exists ? ' · уже на карте' : ''}</span></span><span class="km">км ${num(o.km, 1)}</span></label></li>`).join('')}</ul>
+    <ul class="timeline" style="--rc:${safeColor(r && r.color)}">${v.items.map((o, i) => `<li><label class="item"><input type="checkbox" data-fi="${i}" ${o.checked ? 'checked' : ''} style="margin:0 0 0 1px;accent-color:${safeColor(r && r.color)}"><span class="nm">${esc(o.name)}<span class="sub">${smallIco(o.type).replace('class="ico"', 'class="ico" style="display:inline-grid;vertical-align:-4px;margin-right:4px;' + (o.type === 'station' || o.type === 'halt' ? '' : 'background:' + TYPES[o.type].color) + '"')}${esc(TYPES[o.type].label)}${o.line ? ' · ветка ' + o.line : ''}${o.extra.lengthM ? ' · ' + num(o.extra.lengthM) + ' м' : ''}${o.attach ? ' · уже на карте, привяжется к маршруту' : o.exists ? ' · уже на карте' : ''}</span></span><span class="km">км ${num(o.km, 1)}</span></label></li>`).join('')}</ul>
     <div class="actions"><button class="btn primary" data-act="finderAdd" type="button" ${n ? '' : 'disabled'}>Добавить выбранные (${n})</button></div>`;
 }
 async function addFound() {
@@ -2234,6 +2263,10 @@ async function addFound() {
   try {
     for (const o of sel) {
       const now = new Date().toISOString();
+      if (o.attach) {
+        const p = S.pois.get(o.existId);
+        if (p) { const rs = poiRoutes(p); if (!rs.includes(v.id)) await store.put('pois', o.existId, { ...p, routeId: p.routeId || rs[0] || v.id, routeIds: [...rs, v.id], updatedAt: now }); n++; continue; }
+      }
       await store.put('pois', newId(), { type: o.type, name: o.name.slice(0, 120), routeId: v.id, lat: +o.lat.toFixed(6), lng: +o.lng.toFixed(6), lengthM: o.extra.lengthM ?? null, heightM: null, elevationM: o.extra.elevationM ?? null, year: '', platforms: '', description: '', link: o.link, source: 'osm', createdAt: now, updatedAt: now });
       n++;
     }
