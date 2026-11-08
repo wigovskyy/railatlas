@@ -1371,6 +1371,12 @@ const TILES = {
     esri('Canvas/World_Light_Gray_Base', { maxNativeZoom: 16, attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS user community' }),
     esri('Canvas/World_Light_Gray_Reference', { maxNativeZoom: 16 }),
   ]),
+  // Светлая основа и OpenRailwayMap в полную силу: на ней подписаны станции, а на крупном масштабе все.
+  // Железные дороги идут первыми: setBase отправляет слои назад по очереди, и последний окажется самым нижним
+  stations: L.layerGroup([
+    L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', { subdomains: 'abc', maxZoom: 19, attribution: '<a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>' }),
+    esri('Canvas/World_Light_Gray_Base', { maxNativeZoom: 16, attribution: 'Esri, HERE, Garmin, © OpenStreetMap contributors, and the GIS user community' }),
+  ]),
   terrain: esri('World_Topo_Map', { maxNativeZoom: 19, attribution: 'Esri, HERE, Garmin, Intermap, USGS, NGA, NASA, © OpenStreetMap contributors, and the GIS user community' }),
   satellite: L.layerGroup([
     esri('World_Imagery', { maxNativeZoom: 19, attribution: 'Esri, Maxar, Earthstar Geographics, and the GIS user community' }),
@@ -1396,7 +1402,7 @@ const BaseSwitch = L.Control.extend({
   options: { position: 'topleft' },
   onAdd() {
     const el = L.DomUtil.create('div', 'basesw');
-    el.innerHTML = [['plain', 'Plain'], ['terrain', 'Terrain'], ['satellite', 'Satellite']]
+    el.innerHTML = [['plain', 'Plain'], ['terrain', 'Terrain'], ['satellite', 'Satellite'], ['stations', 'Stations']]
       .map(([k, t]) => `<button type="button" data-base="${k}" aria-pressed="${k === currentBase}">${t}</button>`).join('')
       + `<span class="sep"></span><button type="button" data-rail aria-pressed="true" title="Показать или скрыть все железные дороги мира">Rail</button>`;
     L.DomEvent.disableClickPropagation(el);
