@@ -781,6 +781,9 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .mapwrap { position: relative; min-width: 0; }
 #map { position: absolute; inset: 0; background: var(--sea); }
+.slbl { position: absolute; left: 100%; top: 50%; transform: translateY(-50%); margin-left: 5px; white-space: nowrap; pointer-events: none; opacity: 0; font: 600 11px/1 var(--f-body); color: #1d2733; text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff, 0 0 3px #fff; }
+.slbl.on { opacity: 1; }
+.slbl.left { left: auto; right: 100%; margin-left: 0; margin-right: 5px; }
 .pz { opacity: 0; visibility: hidden; transition: opacity .25s ease, visibility 0s linear .25s; }
 .pz.pz-sel, .z-all .pz { opacity: 1; visibility: visible; transition: opacity .25s ease; }
 .z-ge-3 .pz3 { opacity: 1; visibility: visible; transition: opacity .25s ease; }
@@ -1506,14 +1509,41 @@ function drawPois() {
     // С какого масштаба показывать точку; у открытого маршрута порог ниже на 2
     const minZ = Math.max(3, (POI_MIN_ZOOM[p.type] ?? 10) - (sel && onRoute(p, sel) ? 2 : 0));
     const pz = 'pz pz' + minZ + (selPoi === id ? ' pz-sel' : '');
-    const html = iconHtml(p.type, size).replace('class="pm', 'class="pm' + cls);
+    // У станций открытого маршрута рядом со значком рисуется название (какие подписи поместятся, решает layoutStationLabels)
+    const lbl = !!(sel && onRoute(p, sel) && (p.type === 'station' || p.type === 'halt') && p.name);
+    const html = iconHtml(p.type, size).replace('class="pm', 'class="pm' + cls) + (lbl ? '<span class="slbl">' + esc(p.name) + '</span>' : '');
     const m = L.marker([p.lat, p.lng], { icon: L.divIcon({ html, className: pz, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }), riseOnHover: true, keyboard: true, title: p.name, zIndexOffset: p.type === 'station' ? 0 : 200 });
     m.bindTooltip(`${esc(p.name)}<small>${esc(TYPES[p.type]?.label || '')}</small>`, { className: 'rt', direction: 'top', offset: [0, -size / 2 - 2] });
     m.on('click', (e) => { if (S.mode === 'draw') { addVertex([p.lat, p.lng]); return; } if (S.mode) return; openView({ name: 'poi', id }); });
+    if (lbl) m.__minZ = minZ;
     poiLayer.addLayer(m); poiMarkers.set(id, m);
   }
   updateZoomClass();
+  layoutStationLabels();
 }
+
+// Подписи станций: рисуем справа от значка, а если место занято, слева; не помещающиеся прячем (на крупном масштабе помещаются все)
+function layoutStationLabels() {
+  const boxes = [], items = [], z = map.getZoom();
+  for (const m of poiMarkers.values()) {
+    if (m.__minZ == null) continue;
+    const el = m.getElement && m.getElement(), lb = el && el.querySelector('.slbl');
+    if (!lb) continue;
+    if (z < m.__minZ) { lb.classList.remove('on'); continue; }
+    const p = map.latLngToContainerPoint(m.getLatLng());
+    items.push({ lb, p, w: lb.offsetWidth + 6, h: 14 });
+    boxes.push([p.x - 9, p.y - 9, p.x + 9, p.y + 9]);
+  }
+  const hit = (b) => boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]);
+  for (const it of items) {
+    const right = [it.p.x + 9, it.p.y - it.h / 2, it.p.x + 9 + it.w, it.p.y + it.h / 2];
+    const left = [it.p.x - 9 - it.w, right[1], it.p.x - 9, right[3]];
+    const side = !hit(right) ? 'right' : !hit(left) ? 'left' : null;
+    it.lb.classList.toggle('on', !!side); it.lb.classList.toggle('left', side === 'left');
+    if (side) boxes.push(side === 'right' ? right : left);
+  }
+}
+map.on('zoomend', layoutStationLabels);
 
 function fitAll() {
   const pts = [];
