@@ -1042,7 +1042,7 @@ const store = {
       history.replaceState(null, '', location.pathname + location.search);
     }
     let d;
-    try { const rd = await this.ghRead(); d = rd.data; this.gh.cache = rd; } catch (e) {
+    try { d = await this.ghReadAll(); } catch (e) {
       // API недоступен (лимит запросов и т. п.): показываем опубликованную копию
       try { const res = await fetch('data.json', { cache: 'no-cache' }); if (res.ok) d = await res.json(); } catch (e2) { /* файла нет */ }
     }
@@ -1064,20 +1064,58 @@ const store = {
     return true;
   },
   ghHeaders(extra) { return { Accept: 'application/vnd.github+json', ...(this.gh.token ? { Authorization: 'Bearer ' + this.gh.token } : {}), ...extra }; },
-  async ghRead() {
-    const res = await fetch(`${this.gh.api}/contents/data.json?t=${Date.now()}`, { headers: this.ghHeaders(), cache: 'no-store' });
-    if (res.status === 404) return { sha: null, data: { routes: [], pois: [] } };
+  // Данные лежат в нескольких файлах data/routes-NN.json и data/pois-NN.json: правка одного объекта переписывает только его файл
+  GH_ROUTE_SHARDS: 4,
+  GH_POI_SHARDS: 16,
+  ghShardPaths(coll) {
+    const n = coll === 'routes' ? this.GH_ROUTE_SHARDS : this.GH_POI_SHARDS, out = [];
+    for (let i = 0; i < n; i++) out.push('data/' + coll + '-' + String(i).padStart(2, '0') + '.json');
+    return out;
+  },
+  ghShardPath(coll, id) {
+    let h = 2166136261;
+    const s = String(id);
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    const n = coll === 'routes' ? this.GH_ROUTE_SHARDS : this.GH_POI_SHARDS;
+    return 'data/' + coll + '-' + String(h % n).padStart(2, '0') + '.json';
+  },
+  async ghReadFile(path) {
+    const res = await fetch(this.gh.api + '/contents/' + path + '?t=' + Date.now(), { headers: this.ghHeaders(), cache: 'no-store' });
+    if (res.status === 404) return { sha: null, items: [] };
     if (!res.ok) throw new Error('GitHub ответил ' + res.status);
     const meta = await res.json();
     let text;
-    if (meta.content && meta.encoding === 'base64') text = new TextDecoder().decode(Uint8Array.from(atob(meta.content.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
+    if (meta.content && meta.encoding === 'base64') text = new TextDecoder().decode(Uint8Array.from(atob(meta.content.replace(/\s/g, '')), (c) => c.charCodeAt(0)));
     else {
-      // файлы больше 1 МБ API отдаёт без содержимого, берём их отдельным запросом
-      const raw = await fetch(`${this.gh.api}/git/blobs/${meta.sha}`, { headers: this.ghHeaders({ Accept: 'application/vnd.github.raw+json' }), cache: 'no-store' });
+      const raw = await fetch(this.gh.api + '/git/blobs/' + meta.sha, { headers: this.ghHeaders({ Accept: 'application/vnd.github.raw+json' }), cache: 'no-store' });
       if (!raw.ok) throw new Error('GitHub ответил ' + raw.status);
       text = await raw.text();
     }
-    return { sha: meta.sha, data: JSON.parse(text) };
+    const d = JSON.parse(text);
+    return { sha: meta.sha, items: Array.isArray(d.items) ? d.items : [] };
+  },
+  async ghReadAll() {
+    const gh = this.gh, out = { routes: [], pois: [] };
+    const jobs = [];
+    for (const coll of ['routes', 'pois']) for (const path of this.ghShardPaths(coll)) jobs.push({ coll, path });
+    gh.cache = {};
+    if (gh.token) {
+      // Вошли: читаем через API, там всегда свежая версия
+      try {
+        await Promise.all(jobs.map(async (j) => { const f = await this.ghReadFile(j.path); gh.cache[j.path] = f; out[j.coll].push(...f.items); }));
+        if (jobs.some((j) => gh.cache[j.path].sha)) return out;
+      } catch (e) { /* пробуем опубликованную копию */ }
+      gh.cache = {}; out.routes = []; out.pois = [];
+    }
+    let found = 0;
+    await Promise.all(jobs.map(async (j) => {
+      const res = await fetch(j.path, { cache: 'no-cache' });
+      if (!res.ok) return;
+      const d = await res.json();
+      found++; out[j.coll].push(...(Array.isArray(d.items) ? d.items : []));
+    }));
+    if (!found) throw new Error('нет файлов данных');
+    return out;
   },
   async ghCheck() {
     try {
@@ -1117,44 +1155,51 @@ const store = {
     clearTimeout(this.gh.timer);
     this.gh.timer = setTimeout(() => this.ghFlush(), 1500);
   },
+  async ghSaveShard(path, list) {
+    const gh = this.gh;
+    if (!gh.cache) gh.cache = {};
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Версию файла берём из памяти после прошлого сохранения; при конфликте читаем заново с GitHub
+      const cur = (attempt === 0 && gh.cache[path]) ? gh.cache[path] : await this.ghReadFile(path);
+      const m = new Map(cur.items.map((o) => [o.id, o]));
+      for (const op of list) { if (op.data) m.set(op.id, { id: op.id, ...op.data }); else m.delete(op.id); }
+      const items = [...m.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const bytes = new TextEncoder().encode(JSON.stringify({ format: 'railatlas-shard', version: 1, items }));
+      let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      const first = list[0], what = list.length > 1 ? 'изменений: ' + list.length : (first.data ? 'правка' : 'удаление') + ': ' + ((first.data && first.data.name) || first.id);
+      const res = await fetch(gh.api + '/contents/' + path, {
+        method: 'PUT', headers: this.ghHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ message: 'Карта: ' + what, content: btoa(bin), ...(cur.sha ? { sha: cur.sha } : {}) }),
+      });
+      if (res.ok) {
+        try { const rj = await res.json(); if (rj && rj.content && rj.content.sha) gh.cache[path] = { sha: rj.content.sha, items }; else delete gh.cache[path]; } catch (e) { delete gh.cache[path]; }
+        return;
+      }
+      delete gh.cache[path];
+      if (res.status === 409 || res.status === 422) continue;  // файл успели изменить — читаем заново
+      if (res.status === 401 || res.status === 403) { S.canWrite = false; refresh(); throw new Error(this.ghAuthUrl ? 'GitHub не принял вход. Нажмите на статус внизу и войдите снова.' : 'GitHub не принял токен. Нажмите на статус внизу и введите его снова.'); }
+      throw new Error('GitHub ответил ' + res.status);
+    }
+    throw new Error('файл на GitHub всё время меняется, попробуйте ещё раз');
+  },
   async ghFlush() {
     const gh = this.gh;
     if (gh.saving) { await gh.saving; if (gh.ops.length) return this.ghFlush(); return; }
     if (!gh.ops.length) return;
     const ops = gh.ops; gh.ops = []; gh.inflight = ops; this.pendSave();
+    const failed = []; let lastErr = null;
     gh.saving = (async () => {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        // Берём свежую версию файла и накладываем свои изменения: так не затираются правки с другого компьютера
-        // Версию файла берём из памяти после прошлого сохранения: так не качаем 2,5 МБ заново; при конфликте читаем с GitHub
-        const { sha, data } = (attempt === 0 && gh.cache) ? gh.cache : await this.ghRead();
-        const maps = { routes: new Map((data.routes || []).map((o) => [o.id, o])), pois: new Map((data.pois || []).map((o) => [o.id, o])) };
-        for (const op of ops) { if (op.data) maps[op.coll].set(op.id, { id: op.id, ...op.data }); else maps[op.coll].delete(op.id); }
-        const out = { format: 'railatlas', version: 1, exportedAt: new Date().toISOString(), routes: [...maps.routes.values()], pois: [...maps.pois.values()] };
-        const bytes = new TextEncoder().encode(JSON.stringify(out));
-        let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-        const first = ops[0], what = ops.length > 1 ? `изменений: ${ops.length}` : `${first.data ? 'правка' : 'удаление'}: ${(first.data && first.data.name) || first.id}`;
-        const res = await fetch(`${gh.api}/contents/data.json`, {
-          method: 'PUT', headers: this.ghHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ message: 'Карта: ' + what, content: btoa(bin), ...(sha ? { sha } : {}) }),
-        });
-        if (res.ok) {
-          try { const rj = await res.json(); gh.cache = (rj && rj.content && rj.content.sha) ? { sha: rj.content.sha, data: out } : null; } catch (e) { gh.cache = null; }
-          // показываем то, что теперь лежит в репозитории, вместе с чужими правками
-          S.routes.clear(); S.pois.clear(); loadInto(out);
-          for (const op of gh.ops) { const m = op.coll === 'routes' ? S.routes : S.pois; if (op.data) m.set(op.id, op.data); else m.delete(op.id); }
-          refresh(false, true);
-          return;
-        }
-        gh.cache = null;
-        if (res.status === 409 || res.status === 422) continue;  // файл успели изменить — читаем заново
-        if (res.status === 401 || res.status === 403) { S.canWrite = false; refresh(); throw new Error(this.ghAuthUrl ? 'GitHub не принял вход. Нажмите на статус внизу и войдите снова.' : 'GitHub не принял токен. Нажмите на статус внизу и введите его снова.'); }
-        throw new Error('GitHub ответил ' + res.status);
+      const groups = new Map();
+      for (const op of ops) { const p = this.ghShardPath(op.coll, op.id); if (!groups.has(p)) groups.set(p, []); groups.get(p).push(op); }
+      for (const [path, list] of groups) {
+        try { await this.ghSaveShard(path, list); }
+        catch (e) { failed.push(...list); lastErr = e; }
       }
-      throw new Error('файл на GitHub всё время меняется, попробуйте ещё раз');
+      if (failed.length) throw lastErr;
     })();
     this.statusText();
     try { await gh.saving; }
-    catch (e) { gh.ops = ops.concat(gh.ops); gh.cache = null; toast('Не сохранено на GitHub: ' + e.message); }
+    catch (e) { gh.ops = failed.concat(gh.ops); toast('Не сохранено на GitHub: ' + e.message); }
     finally { gh.saving = null; gh.inflight = []; this.pendSave(); this.statusText(); }
   },
   // Серверное хранилище (api.php рядом с сайтом): читают все, правит тот, кто ввёл ключ
