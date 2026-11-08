@@ -2322,8 +2322,8 @@ async function findObjects(routeId) {
     const query = (pts) => {
       const around = `(around:${rad},${pts.map((p) => p[0].toFixed(5) + ',' + p[1].toFixed(5)).join(',')})`;
       return `[out:json][timeout:60];
-node["railway"~"^(station|halt)$"]${around}->.st;
-.st out body qt;
+(node["railway"~"^(station|halt)$"]${around};way["railway"~"^(station|halt)$"]${around};relation["railway"~"^(station|halt)$"]${around};)->.st;
+.st out body center qt;
 (way["railway"~"${RAIL_RE}"]["tunnel"]["tunnel"!="no"]${around};way["railway"~"${RAIL_RE}"]["bridge"]["bridge"!="no"]${around};);
 out tags geom qt;`;
     };
@@ -2367,15 +2367,18 @@ function collectObjects(r, els, routeId) {
   const fill = (o, hit) => { o.exists = !!hit; o.attach = !!hit && !onRoute(hit.p, routeId); o.existId = hit ? hit.id : null; };
   const out = [], seenSt = new Set();
   for (const el of els) {
-    if (el.type !== 'node' || el.lat == null || el.lon == null) continue;
+    // Станция может быть нарисована не точкой, а площадкой или зданием (way/relation): берём её центр
+    const isNd = el.type === 'node', cen = isNd ? el : el.center;
+    if (!cen || cen.lat == null || cen.lon == null) continue;
+    if (!isNd && !/^(station|halt)$/.test((el.tags && el.tags.railway) || '')) continue;
     const t = el.tags || {};
     if (t.station === 'subway' || t.station === 'light_rail' || t.station === 'funicular') continue;
-    const c = routeChainage(r, [el.lat, el.lon]); if (!c || c.off > 350) continue;
+    const c = routeChainage(r, [cen.lat, cen.lon]); if (!c || c.off > 350) continue;
     const type = t.railway === 'halt' ? 'halt' : 'station', name = nm(t);
     const key = (name || el.id) + '';
     if (seenSt.has(key)) continue; seenSt.add(key);
-    out.push({ type, name: name || 'Станция без названия', lat: el.lat, lng: el.lon, km: c.along / 1000, line: c.line, link: 'https://www.openstreetmap.org/node/' + el.id, extra: t.ele ? { elevationM: numOrNull(t.ele) } : {} });
-    fill(out[out.length - 1], near(el.lat, el.lon, ['station', 'halt'], 200));
+    out.push({ type, name: name || 'Станция без названия', lat: cen.lat, lng: cen.lon, km: c.along / 1000, line: c.line, link: 'https://www.openstreetmap.org/' + el.type + '/' + el.id, extra: t.ele ? { elevationM: numOrNull(t.ele) } : {} });
+    fill(out[out.length - 1], near(cen.lat, cen.lon, ['station', 'halt'], 200));
   }
   // Туннели и мосты: соседние куски одного сооружения (и параллельные пути) объединяются
   const pieces = [];
