@@ -867,7 +867,7 @@ form.f .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     <div class="tools">
       <div class="search">
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        <input id="q" type="search" placeholder="Найти маршрут, станцию, туннель…" autocomplete="off">
+        <input id="q" type="search" placeholder="Найти маршрут, станцию, место…" autocomplete="off">
       </div>
       <div class="chips" id="chips"></div>
       <div class="row">
@@ -1570,7 +1570,63 @@ function renderPanel() {
   else { S.view = { name: 'list' }; el.innerHTML = listView(); }
 }
 
-function listView() {
+// ---------- Поиск мест на карте (Nominatim, OpenStreetMap) ----------
+const geoLayer = L.layerGroup().addTo(map);
+let geoBusy = false;
+function geoBlock() {
+  if (!S.q) return '';
+  const g = S.geo;
+  const again = '<button class="btn" type="button" data-act="geoSearch">Найти «' + esc($('#q').value.trim()) + '» на карте</button>';
+  let body;
+  if (g && g.q === S.q) {
+    if (g.state === 'loading') body = '<p class="hint">Ищу на карте…</p>';
+    else if (g.state === 'error') body = '<p class="err">Не удалось выполнить поиск. Проверьте интернет и попробуйте ещё раз.</p>' + again;
+    else if (!g.items.length) body = '<p class="hint">Таких мест не нашлось. Попробуйте написать иначе или добавить страну.</p>';
+    else body = g.items.map((it, i) => '<button class="item" type="button" data-act="geoGo" data-i="' + i + '"><span></span><span class="nm">' + esc(it.title) + '<span class="sub">' + esc(it.sub) + '</span></span><span class="km"></span></button>').join('');
+  } else body = again + '<p class="hint">Города, адреса, вокзалы — по всему миру. Можно нажать Enter.</p>';
+  return '<div class="group"><h3><span>Места на карте</span></h3>' + body + '</div>';
+}
+function geoWrap(html) {
+  if (!S.q) return html;
+  return geoBlock() + html.replace('<b>Ничего не найдено</b>', '<b>Среди ваших маршрутов и объектов ничего нет</b>');
+}
+async function geoSearch() {
+  const raw = $('#q').value.trim();
+  if (raw.length < 2 || geoBusy) return;
+  geoBusy = true;
+  const key = raw.toLowerCase();
+  S.geo = { q: key, state: 'loading', items: [] };
+  if (S.view.name !== 'list') S.view = { name: 'list' };
+  renderPanel();
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&accept-language=ru&q=' + encodeURIComponent(raw), { headers: { Accept: 'application/json' } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const arr = await res.json();
+    const seen = new Set();
+    S.geo = { q: key, state: 'ok', items: arr.filter((o) => { const k = String(o.display_name || '') + '|' + o.type; if (seen.has(k)) return false; seen.add(k); return true; }).map((o) => {
+      const parts = String(o.display_name || '').split(', ');
+      return { title: parts.slice(0, 2).join(', ') || raw, sub: parts.slice(2).join(', ') || String(o.type || ''), lat: +o.lat, lng: +o.lon, bbox: (o.boundingbox || []).map(Number) };
+    }).filter((o) => isFinite(o.lat) && isFinite(o.lng)) };
+  } catch (e) { S.geo = { q: key, state: 'error', items: [] }; }
+  setTimeout(() => { geoBusy = false; }, 1000);  // Nominatim просит не чаще одного запроса в секунду
+  if (S.view.name === 'list' && S.q === key) renderPanel();
+  if (S.geo.state === 'ok' && S.geo.items.length === 1) geoGo(0);
+}
+function geoGo(i) {
+  const it = S.geo && S.geo.items && S.geo.items[i];
+  if (!it) return;
+  geoLayer.clearLayers();
+  L.circleMarker([it.lat, it.lng], { radius: 9, color: '#fff', weight: 3, fillColor: '#c2262e', fillOpacity: 1 }).bindPopup(esc(it.title)).addTo(geoLayer);
+  const b = it.bbox;
+  if (b.length === 4 && b.every(isFinite)) map.fitBounds([[b[0], b[2]], [b[1], b[3]]], { maxZoom: 15 });
+  else map.setView([it.lat, it.lng], 13);
+  if (window.matchMedia('(max-width: 760px)').matches) $('#side').classList.add('collapsed');
+}
+$('#q').addEventListener('keydown', (e) => { if (e.key === 'Enter' && S.q) { e.preventDefault(); geoSearch(); } });
+$('#q').addEventListener('input', () => { if (!$('#q').value.trim()) geoLayer.clearLayers(); });
+
+function listView() { return geoWrap(listView0()); }
+function listView0() {
   const routes = [...S.routes].filter(([, r]) => routeVisible(r));
   if (S.q) {
     const q = S.q;
@@ -1744,6 +1800,8 @@ $('#panel').addEventListener('click', async (e) => {
   if (sw) { syncRouteForm(); S.draft.form.color = sw.dataset.color; renderPanel(); drawDraft(); return; }
   const a = e.target.closest('[data-act]'); if (!a) return;
   const act = a.dataset.act;
+  if (act === 'geoSearch') { geoSearch(); return; }
+  if (act === 'geoGo') { geoGo(+a.dataset.i); return; }
   if (act === 'askDelete') { S.confirmDelete = true; renderPanel(); }
   else if (act === 'cancelDelete') { S.confirmDelete = false; renderPanel(); }
   else if (act === 'askDelPoints') { S.confirmPoints = true; renderPanel(); }
